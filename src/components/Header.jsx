@@ -1,14 +1,16 @@
 import React from 'react';
-import { Cpu, RefreshCw, ShieldX, Zap } from 'lucide-react';
+import { LogOut, ShieldX, Zap, User } from 'lucide-react';
 import { useClock, useCountUp } from '../lib/motion';
 
-export function Header({ isFrozen, dbConnected, groqApiKey, geminiApiKey, transactions = [], onOpenGroqModal, onReset }) {
+export function Header({ isFrozen, dbConnected, email, transactions = [], onSignOut }) {
   const time = useClock();
 
   // Live threat counters — derived from the transaction log
-  const blockedCount = transactions.filter(t => t.status === 'blocked' || t.status === 'revoked').length;
+  const blockedCount = transactions.filter(t =>
+    t.status === 'blocked' || t.status === 'voided' || t.status === 'rejected'
+  ).length;
   const autoKillCount = transactions.filter(t =>
-    (t.reason || '').includes('AUTO-KILL') || (t.reason || '').includes('IN-FLIGHT REVOKED')
+    (t.reason || '').includes('AUTO-KILL') || (t.reason || '').includes('RECALLED')
   ).length;
 
   const blockedShown = useCountUp(blockedCount, { duration: 500 });
@@ -40,15 +42,6 @@ export function Header({ isFrozen, dbConnected, groqApiKey, geminiApiKey, transa
             {dbConnected ? 'Systems Nominal' : 'Offline Mode'}
           </span>
 
-          <button
-            onClick={onOpenGroqModal}
-            title="Configure AI API keys"
-            className={`badge transition-colors ${(groqApiKey || geminiApiKey) ? 'badge-ok' : 'badge-muted'} hover:!border-lime/60`}
-          >
-            <Cpu className="w-3 h-3" />
-            {groqApiKey && geminiApiKey ? 'AI Dual Live' : (groqApiKey ? 'Groq Live' : (geminiApiKey ? 'Gemini Live' : 'AI Config'))}
-          </button>
-
           {blockedCount > 0 && (
             <span className="badge badge-danger anim-fade">
               <ShieldX className="w-3 h-3" />
@@ -68,12 +61,19 @@ export function Header({ isFrozen, dbConnected, groqApiKey, geminiApiKey, transa
             {isFrozen ? 'Emergency Lockdown' : 'System Armed'}
           </span>
 
+          {email && (
+            <span className="badge badge-muted max-w-[13rem]" title={email}>
+              <User className="w-3 h-3 flex-shrink-0" />
+              <span className="truncate">{email}</span>
+            </span>
+          )}
+
           <button
-            onClick={onReset}
-            title="Reset daily spending and transaction logs"
-            className="p-2 rounded-lg border border-hair-2 text-ink-muted hover:text-lime hover:border-lime/50 hover:bg-lime/5 transition-colors group"
+            onClick={onSignOut}
+            title="Sign out"
+            className="p-2 rounded-lg border border-hair-2 text-ink-muted hover:text-danger hover:border-danger/50 hover:bg-danger/5 transition-colors"
           >
-            <RefreshCw className="w-3.5 h-3.5 group-hover:rotate-180 transition-transform duration-500" />
+            <LogOut className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>

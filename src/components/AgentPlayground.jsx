@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import {
   Bot, Play, Pause, Zap, Send, Sparkles, Terminal,
-  AlertTriangle, ShieldX, UserCheck, Loader2, SlidersHorizontal, Check, X
+  AlertTriangle, ShieldX, UserCheck, Loader2, SlidersHorizontal, Check, X,
+  KeyRound, Layers3, Gauge, Fingerprint,
 } from 'lucide-react';
-import { parseAgentPromptWithGroq } from '../lib/groqEngine';
+import { parseSpendIntent } from '../lib/intent';
 import {
   MaliciousPromptError, InvalidRequestError,
   scanForPromptInjection, parseOwnerCommand, resolveOwnerCommand,
@@ -25,6 +26,25 @@ const SCENARIOS = [
   { payee: 'unknown-vendor.xyz', amount: 2500,  title: 'Unlisted Payee',    label: 'Unlisted Payee Attack', icon: AlertTriangle, tone: 'danger' },
   { payee: 'vendor-b.com',       amount: 60000, title: 'Exceed Limit',      label: 'Limit Violation',       icon: AlertTriangle, tone: 'warn' },
   { payee: 'aws.amazon.com',     amount: 24000, title: 'Big Spend → Human', label: 'Human Review',          icon: UserCheck,     tone: 'hold' },
+  // Signs one amount, submits another. The gateway verifies the signature over
+  // the amount, so this dies before the engine ever sees it.
+  {
+    payee: 'vendor-a.com', amount: 40000, title: 'Tamper: sign ₹400, send ₹40,000',
+    label: 'Signature Tamper', icon: KeyRound, tone: 'danger',
+    tamper: { signedAmount: 400 },
+  },
+  // Twelve small, individually legal payments. A calendar-day counter lets
+  // these through; a rolling window does not.
+  {
+    payee: 'vendor-a.com', amount: 4800, title: 'Structuring ×12', label: 'Structured Drain',
+    icon: Layers3, tone: 'warn', repeat: 12,
+  },
+  // Fired all at once. The wallet row lock serialises them instead of letting
+  // twelve requests all read the same pre-update total.
+  {
+    payee: 'cloud-compute.io', amount: 6000, title: 'Race ×20', label: 'Concurrent Burst',
+    icon: Gauge, tone: 'warn', burst: 20,
+  },
 ];
 
 const TONE = {
@@ -36,7 +56,7 @@ const TONE = {
 
 export function AgentPlayground({
   isFrozen, isSimulating, onToggleSimulation, onSendSpendRequest,
-  groqApiKey, geminiApiKey, policy, onOwnerCommand,
+  policy, onOwnerCommand, agentRegistered,
 }) {
   const [promptText, setPromptText] = useState('');
   const [activeTab, setActiveTab] = useState('prompt'); // 'prompt' | 'quick'
@@ -78,8 +98,10 @@ export function AgentPlayground({
         return;
       }
 
-      // 3. Otherwise it is a spend intent for the cascade.
-      const parsed = await parseAgentPromptWithGroq(promptText, groqApiKey, geminiApiKey);
+      // 3. Otherwise it is a spend intent. Parsing happens locally — the
+      //    browser holds no model key to leak, and turning "pay aws ₹12,000"
+      //    into a payee and an amount never needed a model.
+      const parsed = parseSpendIntent(promptText);
       await onSendSpendRequest({
         payee: parsed.payee,
         amount: parsed.amount,
@@ -107,8 +129,29 @@ export function AgentPlayground({
     setPromptText('');
   };
 
-  const handleQuickSpend = (payee, amount, label) => {
-    onSendSpendRequest({ payee, amount, agentPrompt: `Quick scenario test: ${label}` });
+  /**
+   * Fire a scripted scenario.
+   *
+   * `burst` sends every request concurrently rather than in sequence — that is
+   * the point of the race case. If the cap held only because requests happened
+   * to arrive one at a time, this is what would expose it.
+   */
+  const handleQuickSpend = async (s) => {
+    const one = (i) =>
+      onSendSpendRequest({
+        payee: s.payee,
+        amount: s.amount,
+        agentPrompt: `${s.label}${s.repeat || s.burst ? ` (${i + 1})` : ''}`,
+        tamper: s.tamper,
+      }).catch(() => {});
+
+    if (s.burst) {
+      await Promise.all(Array.from({ length: s.burst }, (_, i) => one(i)));
+    } else if (s.repeat) {
+      for (let i = 0; i < s.repeat; i++) await one(i);
+    } else {
+      await one(0);
+    }
   };
 
   return (
@@ -234,7 +277,7 @@ export function AgentPlayground({
             return (
               <button
                 key={s.payee + s.amount}
-                onClick={() => handleQuickSpend(s.payee, s.amount, s.label)}
+                onClick={() => handleQuickSpend(s)}
                 className="group p-3.5 rounded-xl border text-left flex items-center justify-between gap-3 transition-all duration-300 hover:-translate-y-0.5"
                 style={{ borderColor: t.border, background: t.bg }}
               >
@@ -256,11 +299,20 @@ export function AgentPlayground({
         </div>
       )}
 
+      <div className="flex items-center gap-2 rounded-lg border border-hair px-3 py-2">
+        <Fingerprint className={`w-3.5 h-3.5 flex-shrink-0 ${agentRegistered ? 'text-lime' : 'text-ink-faint'}`} />
+        <span className="font-mono text-[10px] text-ink-muted leading-relaxed">
+          {agentRegistered
+            ? 'Agent registered. Every request below is signed with its own key and verified at the gateway.'
+            : 'An agent keypair is generated on your first request. The private half never leaves this browser.'}
+        </span>
+      </div>
+
       {isFrozen && (
         <div className="anim-fade flex items-center gap-2 rounded-lg border border-danger/30 bg-danger/[0.05] px-3 py-2">
           <ShieldX className="w-3.5 h-3.5 text-danger flex-shrink-0" />
           <span className="font-mono text-[10px] text-danger">
-            Wallet frozen — every request below will be rejected at Layer 1.
+            Wallet frozen — the database refuses every request below, whatever this page does.
           </span>
         </div>
       )}

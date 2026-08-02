@@ -1,4 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Loader2 } from 'lucide-react';
+
 import { Header } from './components/Header';
 import { Hero } from './components/Hero';
 import { KillSwitchButton } from './components/KillSwitchButton';
@@ -6,436 +8,367 @@ import { PolicyCard } from './components/PolicyCard';
 import { AgentPlayground } from './components/AgentPlayground';
 import { TransactionFeed } from './components/TransactionFeed';
 import { TransactionModal } from './components/TransactionModal';
-import { GroqConfigModal } from './components/GroqConfigModal';
 import { AutoKillAlert } from './components/AutoKillAlert';
 import { EscalationPanel } from './components/EscalationPanel';
-import { runEscalation, DECISION } from './lib/escalationEngine';
+import { TrustPanel } from './components/TrustPanel';
+import { AuthPage } from './components/AuthPage';
+
+import { getSession, onAuthChange, signOut } from './lib/supabase';
 import {
-  fetchPolicyFromDb,
-  fetchTransactionsFromDb,
-  updateDbFreeze,
-  updateDbPolicy,
-  saveTransactionToDb
-} from './lib/supabase';
+  bootstrapWallet, fetchSnapshot, setFrozen, setPolicy,
+  addCounterparty, removeCounterparty, resolveReview, voidHold,
+  registerAgent, revokeAgent, verifyChain, sweepExpired, callGateway,
+} from './lib/api';
+import {
+  exportPublicJwk, getStoredAgentId, storeAgentId, forgetAgent,
+  signSpendRequest, signTamperedRequest,
+} from './lib/agentKey';
+import { toPaise, toRupees } from './lib/intent';
 import { playFreezeAlert } from './lib/sound';
 import { useScrollProgress } from './lib/motion';
-import { money } from './lib/format';
-import { sanitizeAmount, sanitizePayee, InvalidRequestError } from './lib/promptSecurity';
 
 /**
- * Monotonic transaction id. `Date.now()` alone collides whenever two requests
- * resolve in the same millisecond — which the test-suite buttons and the
- * simulator both do — producing duplicate React keys and dropped feed cards.
+ * Halt — owner console.
+ *
+ * What this component is NOT able to do, by construction:
+ *
+ *   · decide whether a payment is permitted
+ *   · add to the amount spent
+ *   · turn the kill switch off
+ *
+ * All three used to live here. They now live in Postgres, and this file can
+ * only ask. Every handler below is a call to a database function that
+ * re-derives the wallet from the session and re-checks policy for itself. You
+ * could rewrite this entire file to approve everything and nothing about what
+ * the agent is able to spend would change.
  */
-let txSeq = 0;
-const nextTxId = () => Date.now() * 1000 + (txSeq++ % 1000);
-
-/**
- * Prepend a saved transaction, dropping any copy already in the list.
- * `saveTransactionToDb` writes into the same local store the 3s poll reads,
- * so without this the poll and the optimistic prepend can both carry the same
- * row — duplicate React keys and a card rendered twice.
- */
-const withTx = (prev, tx) => [tx, ...prev.filter(t => t.id !== tx.id)].slice(0, 100);
-
-/** Drop duplicate ids from a freshly fetched list, newest first. */
-const dedupeById = (list) => {
-  const seen = new Set();
-  return list.filter(t => (seen.has(t.id) ? false : seen.add(t.id)));
-};
 
 /** The autonomous agent's scripted run — one spend attempt per tick. */
 const SIM_ATTEMPTS = [
-  { payee: 'vendor-a.com',       amount: 3500,  prompt: 'Purchase micro tier instance', agentName: 'Cloud Provisioner' },        // L1 → approve (small & safe)
-  { payee: 'aws.amazon.com',     amount: 24000, prompt: 'Scale production S3 storage', agentName: 'Storage Orchestrator' },         // L1 → L2 suspicious → human
-  { payee: 'cloud-compute.io',   amount: 9000,  prompt: 'Renew container registry', agentName: 'DevOps Agent' },            // L1 → approve
-  { payee: 'unknown-hacker.xyz', amount: 4500,  prompt: 'Download unverified scraper tool', agentName: 'Scraper Bot' },    // L1 → block (allowlist wall)
-  { payee: 'vendor-b.com',       amount: 60000, prompt: 'Renew SaaS analytics sub', agentName: 'SaaS Auditor' },            // L1 → block (over limit)
-  { payee: 'shady-endpoint.ru',  amount: 1800,  prompt: 'Obtain proxy IP pool', agentName: 'Network Agent' },                // L1 → block (allowlist wall)
+  { payee: 'vendor-a.com',       amount: 3500,  prompt: 'Purchase micro tier instance' },
+  { payee: 'aws.amazon.com',     amount: 24000, prompt: 'Scale production S3 storage' },
+  { payee: 'cloud-compute.io',   amount: 9000,  prompt: 'Renew container registry' },
+  { payee: 'unknown-hacker.xyz', amount: 4500,  prompt: 'Download unverified scraper tool' },
+  { payee: 'vendor-b.com',       amount: 60000, prompt: 'Renew SaaS analytics sub' },
+  { payee: 'shady-endpoint.ru',  amount: 1800,  prompt: 'Obtain proxy IP pool' },
 ];
 
 export default function App() {
-  const [policy, setPolicy] = useState({
-    spend_limit: 50000,
-    daily_spent: 0,
-    allowlist: ['vendor-a.com', 'vendor-b.com', 'cloud-compute.io', 'aws.amazon.com', 'github.com'],
-    is_frozen: false
-  });
+  const [session, setSession] = useState(undefined); // undefined = still checking
 
-  const [transactions, setTransactions] = useState([]);
-  const [selectedTx, setSelectedTx] = useState(null);
-  const [isSimulating, setIsSimulating] = useState(false);
-  const [groqApiKey, setGroqApiKey] = useState(import.meta.env.VITE_GROQ_API_KEY || '');
-  const [geminiApiKey, setGeminiApiKey] = useState(import.meta.env.VITE_GEMINI_API_KEY || '');
-  const [showGroqModal, setShowGroqModal] = useState(false);
-  const [dbConnected, setDbConnected] = useState(true);
-  // Auto-kill alert state — set when an EXTREME risk triggers auto-freeze
-  const [autoKillEvent, setAutoKillEvent] = useState(null);
-  // In-flight transactions (processing window for revocation demo)
-  const [pendingTxs, setPendingTxs] = useState([]);
-  // Health of the two AI guardians — toggling to false simulates a failure (failover demo)
-  const [agentHealth, setAgentHealth] = useState({ agent1: true, agent2: true });
-  // Transactions held awaiting a human decision (disagreement or total agent failure)
-  const [humanQueue, setHumanQueue] = useState([]);
-  // Most recent escalation trace, shown live in the EscalationPanel
-  const [lastResult, setLastResult] = useState(null);
-
-  // Page scroll progress — drives the hairline reading bar under the header
-  const scrollProgress = useScrollProgress();
-
-  const simulationRef = useRef(null);
-  // Where the simulator is in its script — a ref so it survives re-renders
-  const simStepRef = useRef(0);
-  // Latest spend handler, so the interval always calls the current closure
-  // (fresh groqApiKey / agentHealth) without needing to restart the timer
-  const sendSpendRef = useRef(null);
-  // Ref to always hold the latest policy — needed inside setTimeout callbacks
-  const policyRef = useRef(policy);
-  useEffect(() => { policyRef.current = policy; }, [policy]);
-
-  // Initial load & periodic poll
   useEffect(() => {
-    async function loadData() {
-      try {
-        const p = await fetchPolicyFromDb();
-        const txs = await fetchTransactionsFromDb();
-        setPolicy(p);
-        setTransactions(dedupeById(txs));
-      } catch (e) {
-        setDbConnected(false);
-      }
-    }
-    loadData();
-    const interval = setInterval(loadData, 3000);
-    return () => clearInterval(interval);
+    let alive = true;
+    getSession().then((s) => { if (alive) setSession(s); });
+    const unsub = onAuthChange((s) => setSession(s));
+    return () => { alive = false; unsub(); };
   }, []);
 
-  // Handle freeze/unfreeze
-  const handleToggleFreeze = async () => {
-    const newFrozenState = !policy.is_frozen;
-    setPolicy(prev => ({ ...prev, is_frozen: newFrozenState }));
-    if (newFrozenState) {
-      playFreezeAlert();
-    } else {
-      // Releasing the lockdown resolves the auto-kill event — leaving the banner
-      // up would keep claiming the wallet is frozen after it has been released.
-      setAutoKillEvent(null);
-    }
-    await updateDbFreeze(newFrozenState);
-  };
+  if (session === undefined) return <Booting label="Restoring session" />;
+  if (!session) return <AuthPage />;
+  return <Console key={session.user.id} session={session} />;
+}
 
-  // Handle updating spend limit or allowlist
-  const handleUpdatePolicy = async (newLimit, newAllowlist) => {
-    setPolicy(prev => ({
-      ...prev,
-      spend_limit: newLimit,
-      allowlist: newAllowlist
-    }));
-    await updateDbPolicy(newLimit, newAllowlist);
-  };
+function Booting({ label }) {
+  return (
+    <div className="min-h-screen grid place-items-center">
+      <div className="flex items-center gap-2.5 text-ink-muted">
+        <Loader2 className="w-4 h-4 animate-spin text-lime" />
+        <span className="font-mono text-[11px] tracking-wide">{label}…</span>
+      </div>
+    </div>
+  );
+}
 
-  // Core Spend Enforcement Logic
-  const handleSendSpendRequest = async ({ payee, amount, agentPrompt, agentName }) => {
-    const startTimestamp = Date.now();
-    const selectedAgent = agentName || 'Main compute agent';
+/* ══════════════════════════════ console ══════════════════════════════ */
 
-    // Boundary validation. Anything malformed is refused and written to the
-    // audit log rather than thrown away silently — a rejected request is still
-    // a security event the owner should be able to see.
-    let safePayee, safeAmount;
+const threatFor = (risk) =>
+  risk >= 75 ? 'EXTREME' : risk >= 50 ? 'HIGH' : risk >= 30 ? 'MEDIUM' : 'LOW';
+
+function Console({ session }) {
+  const [snapshot, setSnapshot] = useState(null);
+  const [ready, setReady] = useState(false);
+  const [fatal, setFatal] = useState(null);
+  const [selectedTx, setSelectedTx] = useState(null);
+  const [isSimulating, setIsSimulating] = useState(false);
+  const [autoKillEvent, setAutoKillEvent] = useState(null);
+  const [lastResult, setLastResult] = useState(null);
+  const [agentId, setAgentId] = useState(getStoredAgentId());
+  const [chain, setChain] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const scrollProgress = useScrollProgress();
+  const simulationRef = useRef(null);
+  const simStepRef = useRef(0);
+  const sendRef = useRef(null);
+
+  /* ── snapshot ─────────────────────────────────────────────── */
+
+  const refresh = useCallback(async () => {
     try {
-      safePayee = sanitizePayee(payee);
-      safeAmount = sanitizeAmount(amount);
+      const snap = await fetchSnapshot();
+      setSnapshot(snap);
+      return snap;
     } catch (err) {
-      if (!(err instanceof InvalidRequestError)) throw err;
-      const latencyMs = Date.now() - startTimestamp;
-      const rejected = await saveTransactionToDb({
-        id: nextTxId(),
-        payee: String(payee ?? 'unknown').slice(0, 120),
-        amount: Number.isFinite(Number(amount)) ? Number(amount) : 0,
-        status: 'blocked',
-        reason: `BLOCKED before evaluation — ${err.reason}`,
-        riskScore: 100,
-        aiReasoning: `Request refused at the input boundary: ${err.reason} It never reached the escalation cascade.`,
-        agentPrompt: agentPrompt || '',
-        agentName: selectedAgent,
-        decidedBy: 'validator',
-        threatLevel: 'HIGH',
-        latencyMs,
-        txHash: '',
-        trace: [{ layer: 0, name: 'Input Validator', status: 'BLOCK', detail: err.reason }],
-        timestamp: new Date().toISOString(),
-      });
-      rejected.decidedBy = 'validator';
-      rejected.trace = [{ layer: 0, name: 'Input Validator', status: 'BLOCK', detail: err.reason }];
-      setTransactions(prev => withTx(prev, rejected));
-      return rejected;
+      setFatal(err.message);
+      return null;
     }
-    payee = safePayee;
-    amount = safeAmount;
-    // ─── IN-FLIGHT PROCESSING WINDOW (3 seconds) ─────────────────────────────
-    // This window allows the owner to freeze mid-transaction — Bonus metric.
-    const pendingId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    setPendingTxs(prev => [{ id: pendingId, payee, amount, agentPrompt, startedAt: Date.now() }, ...prev]);
+  }, []);
 
-    await new Promise(resolve => setTimeout(resolve, 3000));
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        await bootstrapWallet();
+        if (!alive) return;
+        await refresh();
+      } catch (err) {
+        if (alive) setFatal(err.message);
+      } finally {
+        if (alive) setReady(true);
+      }
+    })();
+    return () => { alive = false; };
+  }, [refresh]);
 
-    // Remove from pending queue
-    setPendingTxs(prev => prev.filter(t => t.id !== pendingId));
+  // A 2s poll rather than per-table realtime: the snapshot RPC is one round
+  // trip and returns a self-consistent view, whereas separate realtime events
+  // can arrive in an order that renders a spend before the wallet total that
+  // accounts for it.
+  useEffect(() => {
+    if (!ready) return;
+    const t = setInterval(refresh, 2000);
+    return () => clearInterval(t);
+  }, [ready, refresh]);
 
-    // Check if wallet was FROZEN during the processing window — IN-FLIGHT REVOCATION
-    if (policyRef.current.is_frozen) {
-      const latencyMs = Date.now() - startTimestamp;
-      const revokedTx = {
-        id: nextTxId(),
-        payee,
-        amount,
-        status: 'revoked',
-        reason: 'IN-FLIGHT REVOKED — transaction cancelled mid-execution by the owner kill switch.',
-        riskScore: 55,
-        aiReasoning: `Transaction to "${payee}" (${money(amount)}) was actively processing when the owner activated the kill switch. Access revoked mid-execution — funds protected.`,
-        agentPrompt: agentPrompt || '',
-        agentName: selectedAgent,
-        decidedBy: 'human',
-        threatLevel: 'HIGH',
-        latencyMs,
-        txHash: '',
-        timestamp: new Date().toISOString()
+  const wallet = snapshot?.wallet ?? null;
+  const walletId = wallet?.id ?? null;
+
+  // Release holds a dead gateway left reserved. Runs on the console's heartbeat
+  // so a crashed edge function cannot permanently eat the owner's budget.
+  useEffect(() => {
+    if (!walletId) return;
+    const t = setInterval(() => { sweepExpired(walletId).catch(() => {}); }, 15000);
+    return () => clearInterval(t);
+  }, [walletId]);
+
+  /* ── derived view models ──────────────────────────────────── */
+
+  // The engine speaks integer paise; the UI speaks rupees. Convert once, here.
+  const policy = wallet
+    ? {
+        spend_limit: toRupees(wallet.limit_paise),
+        daily_spent: toRupees(wallet.spent_paise),
+        allowlist: snapshot.allowlist ?? [],
+        is_frozen: wallet.frozen,
+        window_seconds: wallet.window_seconds,
+        hold_seconds: wallet.hold_seconds,
+      }
+    : {
+        spend_limit: 0, daily_spent: 0, allowlist: [],
+        is_frozen: false, window_seconds: 86400, hold_seconds: 3,
       };
-      const savedRevoked = await saveTransactionToDb(revokedTx);
-      setTransactions(prev => withTx(prev, savedRevoked));
-      return savedRevoked;
-    }
-    // ─────────────────────────────────────────────────────────────────────────
 
-    // 1. Run the 3-layer escalation cascade: Agent 1 → Agent 2 → Human
-    const currentPolicy = policyRef.current;
-    const result = await runEscalation({
-      payee,
-      amount,
-      policy: currentPolicy,
-      agentPrompt,
-      groqApiKey,
-      geminiApiKey,
-      agentHealth,
-    });
+  const spends = snapshot?.spends ?? [];
+  const agents = snapshot?.agents ?? [];
+  const activeAgent = agents.find((a) => a.id === agentId && a.status === 'active') ?? null;
+
+  const toTx = (s) => {
+    const risk = s.risk_score ?? 0;
+    return {
+      id: s.id,
+      payee: s.host,
+      amount: toRupees(s.amount_paise),
+      status: s.status,
+      reason: s.reason,
+      riskScore: risk,
+      aiScore: s.ai_score,
+      policyFloor: s.policy_floor,
+      aiReasoning: s.ai_reasoning || s.reason,
+      threatLevel: threatFor(risk),
+      decidedBy: s.decided_by,
+      trace: s.trace ?? [],
+      agentPrompt: s.agent_prompt,
+      agentName: s.agent_label || 'Unregistered agent',
+      timestamp: s.created_at,
+      expiresAt: s.expires_at,
+      settledAt: s.settled_at,
+    };
+  };
+
+  // Settled history, in-flight holds, and the human queue are three views of
+  // one table — which is why they can never disagree with each other. The old
+  // build kept them in three separate pieces of React state and they did.
+  const transactions = spends.filter((s) => !['held', 'review'].includes(s.status)).map(toTx);
+  const pendingTxs = spends.filter((s) => s.status === 'held').map(toTx);
+  const humanQueue = spends.filter((s) => s.status === 'review').map(toTx);
+
+  /* ── agent identity ───────────────────────────────────────── */
+
+  const ensureAgent = useCallback(async () => {
+    const stored = getStoredAgentId();
+    const live = (snapshot?.agents ?? []).find((a) => a.id === stored);
+    if (stored && live?.status === 'active') return stored;
+
+    // Either this browser has no agent, or the owner revoked the one it had.
+    // A revoked agent never silently comes back: discard the keypair so the
+    // revocation is permanent for that identity and a fresh one is registered.
+    if (stored && live && live.status !== 'active') await forgetAgent();
+
+    const jwk = await exportPublicJwk();
+    const res = await registerAgent('Browser demo agent', jwk);
+    if (!res?.agent_id) throw new Error('Agent registration failed.');
+    storeAgentId(res.agent_id);
+    setAgentId(res.agent_id);
+    await refresh();
+    return res.agent_id;
+  }, [snapshot, refresh]);
+
+  /* ── the spend path ───────────────────────────────────────── */
+
+  const sendSpend = useCallback(async ({ payee, amount, agentPrompt, tamper }) => {
+    const id = await ensureAgent();
+    const paise = toPaise(amount);
+
+    // The agent signs, the gateway verifies, the engine decides. This function
+    // does none of those three things.
+    const signed = tamper
+      ? await signTamperedRequest({
+          agentId: id,
+          host: payee,
+          signedAmountPaise: toPaise(tamper.signedAmount),
+          sentAmountPaise: paise,
+          prompt: agentPrompt,
+        })
+      : await signSpendRequest({ agentId: id, host: payee, amountPaise: paise, prompt: agentPrompt });
+
+    const result = await callGateway(signed);
     setLastResult(result);
 
-    const riskScore = result.riskScore;
-    const aiReasoning = result.summary;
-
-    const approved = result.action === DECISION.APPROVE;
-    const latencyMs = Date.now() - startTimestamp;
-
-    let threatLevel = 'LOW';
-    if (riskScore >= 75) threatLevel = 'EXTREME';
-    else if (riskScore >= 50) threatLevel = 'HIGH';
-    else if (riskScore >= 30) threatLevel = 'MEDIUM';
-
-    const txHash = approved 
-      ? '0x' + Array.from({length: 64}, () => Math.floor(Math.random()*16).toString(16)).join('')
-      : '';
-
-    // ── LAYER 3 · HUMAN — held for owner decision (no money moves yet) ──
-    if (result.action === DECISION.HOLD) {
-      const heldItem = {
-        id: `held-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        payee,
-        amount,
-        agentPrompt: agentPrompt || '',
-        agentName: selectedAgent,
-        result: {
-          ...result,
-          threatLevel,
-          latencyMs,
-        },
-      };
-      // The agent keeps working; risky requests wait in the queue. Dedupe identical ones.
-      setHumanQueue(prev =>
-        prev.some(h => h.payee === payee && h.amount === amount) ? prev : [heldItem, ...prev]
-      );
-      return heldItem;
-    }
-
-    // ── AUTO-KILL (from Layer 1 reflex or Layer 2 deep analysis) ──
-    if (result.action === DECISION.FREEZE && !currentPolicy.is_frozen) {
-      setPolicy(prev => ({ ...prev, is_frozen: true }));
-      await updateDbFreeze(true);
+    if (result.decision === 'frozen') {
+      playFreezeAlert();
       setIsSimulating(false);
       setAutoKillEvent({
         payee,
         amount,
-        riskScore,
-        aiReasoning,
+        riskScore: result.risk_score,
+        aiReasoning: result.reasoning || result.reason,
         timestamp: new Date().toISOString(),
       });
     }
 
-    const txObj = {
-      id: nextTxId(),
-      payee,
-      amount,
-      status: approved ? 'approved' : 'blocked',
-      reason: result.summary,
-      riskScore,
-      aiReasoning,
-      agentPrompt: agentPrompt || '',
-      agentName: selectedAgent,
-      decidedBy: result.decidedBy,
-      threatLevel,
-      latencyMs,
-      txHash,
-      trace: result.trace,
-      timestamp: new Date().toISOString()
-    };
+    await refresh();
+    return result;
+  }, [ensureAgent, refresh]);
 
-    const savedTx = await saveTransactionToDb(txObj);
-    savedTx.decidedBy = result.decidedBy;
-    savedTx.trace = result.trace;
+  useEffect(() => { sendRef.current = sendSpend; });
 
-    if (approved) {
-      setPolicy(prev => ({
-        ...prev,
-        daily_spent: prev.daily_spent + amount
-      }));
+  /* ── owner actions ────────────────────────────────────────── */
+
+  const guard = async (fn) => {
+    setBusy(true);
+    try {
+      return await fn();
+    } catch (err) {
+      setFatal(err.message);
+      return null;
+    } finally {
+      setBusy(false);
+      refresh();
     }
-
-    setTransactions(prev => withTx(prev, savedTx));
-    return savedTx;
   };
 
-  // Keep the simulator pointed at the current handler. Effects flush before any
-  // interval tick, so the ref is always populated by the time the timer fires.
-  useEffect(() => { sendSpendRef.current = handleSendSpendRequest; });
+  const handleToggleFreeze = () => guard(async () => {
+    const next = !policy.is_frozen;
+    const res = await setFrozen(next, next ? 'Owner pressed the kill switch.' : null);
+    if (next) playFreezeAlert();
+    else setAutoKillEvent(null);
+    return res;
+  });
 
-  // Owner resolves a held (Layer 3) transaction: approve releases funds, reject blocks.
-  const handleHumanDecision = async (heldId, decision) => {
-    const item = humanQueue.find(h => h.id === heldId);
-    if (!item) return;
-    setHumanQueue(prev => prev.filter(h => h.id !== heldId));
-
-    const approved = decision === 'approve';
-    const txHash = approved 
-      ? '0x' + Array.from({length: 64}, () => Math.floor(Math.random()*16).toString(16)).join('')
-      : '';
-
-    const txObj = {
-      id: nextTxId(),
-      payee: item.payee,
-      amount: item.amount,
-      status: approved ? 'approved' : 'blocked',
-      reason: approved
-        ? `APPROVED at Layer 3 — released by the wallet owner after human review.`
-        : `REJECTED at Layer 3 — denied by the wallet owner after human review.`,
-      riskScore: item.result?.riskScore ?? 50,
-      aiReasoning: item.result?.summary || '',
-      agentPrompt: item.agentPrompt || '',
-      agentName: item.agentName || 'Main compute agent',
-      decidedBy: 'human',
-      threatLevel: item.result?.threatLevel || 'MEDIUM',
-      latencyMs: item.result?.latencyMs || 0,
-      txHash,
-      trace: [...(item.result?.trace || []), {
-        layer: 3, name: 'Human · Wallet Owner', status: approved ? 'APPROVE' : 'REJECT',
-        detail: 'resolved by the human-in-the-loop'
-      }],
-      timestamp: new Date().toISOString()
-    };
-
-    const savedTx = await saveTransactionToDb(txObj);
-    savedTx.decidedBy = 'human';
-    savedTx.trace = txObj.trace;
-
-    if (approved) {
-      setPolicy(prev => ({ ...prev, daily_spent: prev.daily_spent + item.amount }));
+  const handleUpdatePolicy = (newLimitRupees, newAllowlist) => guard(async () => {
+    if (Number(newLimitRupees) !== policy.spend_limit) {
+      await setPolicy(toPaise(newLimitRupees));
     }
-    setTransactions(prev => withTx(prev, savedTx));
+    const before = new Set(policy.allowlist);
+    const after = new Set(newAllowlist);
+    for (const host of after) if (!before.has(host)) await addCounterparty(host);
+    for (const host of before) if (!after.has(host)) await removeCounterparty(host);
+  });
+
+  const handleHumanDecision = (spendId, decision) =>
+    guard(() => resolveReview(spendId, decision === 'approve'));
+
+  const handleRecall = (spendId) => guard(() => voidHold(spendId));
+
+  const handleRevokeAgent = (id) => guard(async () => {
+    await revokeAgent(id);
+    if (id === agentId) {
+      await forgetAgent();
+      setAgentId(null);
+    }
+  });
+
+  // Registering an agent requires an owner session. An agent can mint itself a
+  // keypair all day; only the owner can grant one the right to be listened to.
+  const handleRegisterExternal = async (label, jwk) => {
+    const res = await registerAgent(label, jwk);
+    await refresh();
+    return res;
   };
+
+  const handleVerifyChain = () => guard(async () => {
+    const res = await verifyChain();
+    setChain(res);
+    return res;
+  });
 
   /**
-   * Apply a policy change the owner has explicitly confirmed in the console.
+   * Owner policy changes proposed by the console parser.
    *
-   * Only ever reached from the owner's confirmation click. The autonomous spend
-   * path has no route into this function, so an agent — or a prompt injected
-   * into one — cannot widen its own limit or allowlist a payee.
+   * Reachable only from the owner's confirmation click. The autonomous spend
+   * path has no route into here, so an agent — or a prompt injected into one —
+   * cannot widen its own limit or allowlist a payee. The database enforces the
+   * same thing independently: these RPCs require a session, and the agent has
+   * none.
    */
   const handleOwnerCommand = async (apply) => {
     if (!apply) return;
-    const current = policyRef.current;
-
     switch (apply.kind) {
-      case 'set_limit':
-        await handleUpdatePolicy(apply.limit, current.allowlist);
-        break;
-      case 'allow_payee':
-        await handleUpdatePolicy(current.spend_limit, [...current.allowlist, apply.payee]);
-        break;
-      case 'remove_payee':
-        await handleUpdatePolicy(current.spend_limit, current.allowlist.filter(p => p !== apply.payee));
-        break;
-      case 'freeze':
-        if (!current.is_frozen) await handleToggleFreeze();
-        break;
-      case 'unfreeze':
-        if (current.is_frozen) await handleToggleFreeze();
-        break;
-      default:
-        break;
+      case 'set_limit':    return handleUpdatePolicy(apply.limit, policy.allowlist);
+      case 'allow_payee':  return guard(() => addCounterparty(apply.payee));
+      case 'remove_payee': return guard(() => removeCounterparty(apply.payee));
+      case 'freeze':       return policy.is_frozen ? null : handleToggleFreeze();
+      case 'unfreeze':     return policy.is_frozen ? handleToggleFreeze() : null;
+      default:             return null;
     }
   };
 
-  // Simulate an agent going offline / recovering (failover demo).
-  const handleToggleAgent = (agentId) => {
-    setAgentHealth(prev => ({ ...prev, [agentId]: !prev[agentId] }));
-  };
+  /* ── simulator ────────────────────────────────────────────── */
 
-  // Automated Agent Simulator Loop
-  //
-  // The step index lives in a ref, and `policy` is deliberately NOT a dependency.
-  // Previously every approved spend changed `policy`, which tore the interval
-  // down and restarted the sequence at step 0 — so the agent only ever replayed
-  // its first scenario. The request handler reads `policyRef.current` anyway,
-  // so it always sees fresh policy without the effect needing to re-run.
   useEffect(() => {
     if (!isSimulating) {
       if (simulationRef.current) clearInterval(simulationRef.current);
       return;
     }
-
     simulationRef.current = setInterval(() => {
       const item = SIM_ATTEMPTS[simStepRef.current % SIM_ATTEMPTS.length];
       simStepRef.current += 1;
-      sendSpendRef.current({
-        payee: item.payee,
-        amount: item.amount,
-        agentPrompt: item.prompt,
-        agentName: item.agentName,
-      });
+      sendRef.current?.(item).catch(() => {});
     }, 3500);
-
-    return () => {
-      if (simulationRef.current) clearInterval(simulationRef.current);
-    };
+    return () => { if (simulationRef.current) clearInterval(simulationRef.current); };
   }, [isSimulating]);
 
-  // Reset State
-  const handleReset = async () => {
+  const handleSignOut = async () => {
     setIsSimulating(false);
-    simStepRef.current = 0;
-    setPolicy(prev => ({ ...prev, daily_spent: 0, is_frozen: false }));
-    setTransactions([]);
-    setPendingTxs([]);
-    setAutoKillEvent(null);
-    setHumanQueue([]);
-    setLastResult(null);
-    setAgentHealth({ agent1: true, agent2: true });
-    await updateDbFreeze(false);
-    await updateDbPolicy(50000, ['vendor-a.com', 'vendor-b.com', 'cloud-compute.io', 'aws.amazon.com', 'github.com']);
+    await signOut();
   };
+
+  if (!ready) return <Booting label="Opening wallet" />;
+
+  /* ── render ───────────────────────────────────────────────── */
 
   return (
     <div className="relative min-h-screen">
-      {/* Hairline reading progress across the top */}
       <div
         className="fixed top-0 left-0 z-50 h-[2px] bg-lime pointer-events-none"
         style={{
@@ -448,19 +381,27 @@ export default function App() {
       <div className="relative z-10 px-4 md:px-8">
         <Header
           isFrozen={policy.is_frozen}
-          dbConnected={dbConnected}
-          groqApiKey={groqApiKey}
-          geminiApiKey={geminiApiKey}
+          dbConnected={!fatal}
+          email={session.user.email}
           transactions={transactions}
-          onOpenGroqModal={() => setShowGroqModal(true)}
-          onReset={handleReset}
+          onSignOut={handleSignOut}
         />
 
         <main className="max-w-7xl mx-auto flex flex-col">
-          {/* ── Scroll micro-interaction hero ── */}
           <Hero isFrozen={policy.is_frozen} />
 
-          {/* ── Console ── */}
+          {fatal && (
+            <div className="anim-fade mb-4 px-4 py-3 rounded-xl border border-danger/35 bg-danger/[0.06] flex items-center justify-between gap-3">
+              <span className="text-[11px] text-ink-2 leading-relaxed">
+                <span className="label !text-danger mr-2">Engine refused</span>
+                {fatal}
+              </span>
+              <button onClick={() => setFatal(null)} className="btn btn-ghost !py-1 !px-2.5 !text-[10px] flex-shrink-0">
+                Dismiss
+              </button>
+            </div>
+          )}
+
           <SectionRule label="Live Enforcement Console" index="01" />
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 pb-8">
@@ -470,16 +411,22 @@ export default function App() {
                 policy={policy}
                 onToggleFreeze={handleToggleFreeze}
               />
-              <PolicyCard
-                policy={policy}
-                onUpdatePolicy={handleUpdatePolicy}
+              <PolicyCard policy={policy} onUpdatePolicy={handleUpdatePolicy} />
+              <TrustPanel
+                agents={agents}
+                activeAgentId={agentId}
+                chain={chain}
+                auditCount={snapshot?.audit_count ?? 0}
+                onVerifyChain={handleVerifyChain}
+                onRevokeAgent={handleRevokeAgent}
+                onRegisterExternal={handleRegisterExternal}
+                busy={busy}
               />
               <EscalationPanel
-                agentHealth={agentHealth}
-                onToggleAgent={handleToggleAgent}
                 humanQueue={humanQueue}
                 onHumanDecision={handleHumanDecision}
                 lastResult={lastResult}
+                busy={busy}
               />
             </div>
 
@@ -490,15 +437,16 @@ export default function App() {
                 isFrozen={policy.is_frozen}
                 isSimulating={isSimulating}
                 onToggleSimulation={() => setIsSimulating(!isSimulating)}
-                onSendSpendRequest={handleSendSpendRequest}
-                groqApiKey={groqApiKey}
-                geminiApiKey={geminiApiKey}
+                onSendSpendRequest={sendSpend}
+                agentRegistered={Boolean(activeAgent)}
               />
 
               <TransactionFeed
                 transactions={transactions}
                 pendingTxs={pendingTxs}
-                onSelectTransaction={(tx) => setSelectedTx(tx)}
+                holdSeconds={policy.hold_seconds}
+                onRecall={handleRecall}
+                onSelectTransaction={setSelectedTx}
               />
             </div>
           </div>
@@ -507,7 +455,6 @@ export default function App() {
         </main>
       </div>
 
-      {/* Auto-Kill Alert Banner (fixed at top) */}
       <AutoKillAlert
         event={autoKillEvent}
         isFrozen={policy.is_frozen}
@@ -515,29 +462,13 @@ export default function App() {
         onDismiss={() => setAutoKillEvent(null)}
       />
 
-      {/* Transaction Audit Modal */}
-      {selectedTx && (
-        <TransactionModal
-          transaction={selectedTx}
-          onClose={() => setSelectedTx(null)}
-        />
-      )}
-
-      {/* Groq AI Config Modal */}
-      {showGroqModal && (
-        <GroqConfigModal
-          apiKey={groqApiKey}
-          onSaveApiKey={(key) => setGroqApiKey(key)}
-          geminiApiKey={geminiApiKey}
-          onSaveGeminiApiKey={(key) => setGeminiApiKey(key)}
-          onClose={() => setShowGroqModal(false)}
-        />
-      )}
+      {selectedTx && <TransactionModal transaction={selectedTx} onClose={() => setSelectedTx(null)} />}
     </div>
   );
 }
 
-/** Numbered section rule with a tick strip — the panel-seam motif. */
+/* ─────────────────────────── chrome ─────────────────────────── */
+
 function SectionRule({ label, index }) {
   return (
     <div className="flex items-center gap-4 py-7">
@@ -550,20 +481,19 @@ function SectionRule({ label, index }) {
 }
 
 const MARQUEE_ITEMS = [
-  'Wallet-layer enforcement',
-  'Agent 1 · rules',
-  'Agent 2 · Groq risk',
-  'Layer 3 · human release',
-  'In-flight revocation',
-  'Prompt-injection kill',
-  'Allowlist boundary matching',
-  'Fail-closed on agent outage',
+  'Enforced in Postgres',
+  'ECDSA agent identity',
+  'Single-use nonces',
+  'Rolling-window cap',
+  'Authorize → hold → capture',
+  'In-flight recall',
+  'SHA-256 audit chain',
+  'Owner-scoped RLS',
 ];
 
 function Footer() {
   return (
     <footer className="border-t border-hair pt-8 pb-10 flex flex-col gap-7">
-      {/* Capability marquee */}
       <div className="marquee-mask overflow-hidden">
         <div className="marquee-track gap-3">
           {[...MARQUEE_ITEMS, ...MARQUEE_ITEMS].map((item, i) => (
@@ -588,7 +518,7 @@ function Footer() {
 
         <div className="flex items-center gap-2">
           <span className="badge badge-muted">React + Vite</span>
-          <span className="badge badge-muted">Supabase</span>
+          <span className="badge badge-muted">Postgres</span>
           <span className="badge badge-ok">Groq AI</span>
         </div>
 

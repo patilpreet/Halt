@@ -1,253 +1,236 @@
-# Halt — Autonomous AI Agent Wallet Security Engine
+# Halt — wallet-layer spend enforcement for autonomous agents
 
 > **Hackathon Problem Statement 2: The Kill Switch**
 > *Domain: Fintech — Autonomous AI Agent Wallet Enforcement*
 
-Halt is a real-time wallet security layer that enforces spend limits, allowlisted payees, and an owner-controlled kill switch **independently of the agent's own logic** — so a compromised, buggy, or overly aggressive AI agent cannot drain funds faster than a human can react.
+An agent asks for money. Something that is not the agent decides.
+
+```
+  agent/                supabase/functions/gateway      supabase/migrations
+  ────────              ──────────────────────────      ───────────────────
+  holds a private   ──► proves WHO is asking        ──► decides WHETHER it may
+  key and a URL.        ECDSA P-256 over the            inside one transaction,
+  Nothing else.         exact amount.                   under a row lock.
+```
+
+The agent has no database URL, no anon key, no session, no route to the tables.
+Delete the frontend, rewrite the gateway, run the agent from a machine you do not
+control — the rules in `0002_engine.sql` still hold, because they *are* the
+transaction that moves the money.
 
 ---
 
-## 🛡️ How It Addresses The Problem Statement
+## What is actually enforced, and where it lives
 
-| Requirement | Halt Implementation |
+| Attack | Where it dies |
 |---|---|
-| **Wallet Layer Enforcement** | `index.js` Express server acts as the enforcement gateway — all agent spend requests pass through it. Rules are evaluated server-side, never in the agent's own code. |
-| **Allowlisted Counterparties** | Owner-managed allowlist stored in Supabase. Agent can only transact with pre-approved payee domains. Any unlisted payee is blocked instantly. |
-| **Owner Kill Switch** | One-click freeze button halts all agent spending. State persisted to Supabase so it survives server restarts. Also triggered automatically when AI risk score ≥ 75. |
-| **Live Demo** | Built-in simulator fires autonomous spend attempts every 3.5s including attacks — all blocked in real-time on the live dashboard. |
-| **In-Flight Revocation (Bonus)** | Every spend has a 3-second processing window. If the owner freezes mid-window, the transaction is **cancelled mid-execution** and logged as `REVOKED`. |
+| Sign ₹400, submit ₹40,000 | ECDSA verify in the gateway — the signature covers the amount |
+| Replay a request that already worked | `primary key (agent_id, nonce)` |
+| Spend while the wallet is frozen | `wallets.frozen`, checked under the row lock before anything else |
+| Pay an unlisted counterparty | `gw_is_allowlisted`, exact host or a true `.` subdomain |
+| `evilaws.amazon.com` posing as `aws.amazon.com` | same — the dot boundary is required |
+| `https://evil.com@aws.amazon.com/x` | `gw_normalize_host` takes what follows the **last** `@` |
+| Twelve individually-legal payments | rolling-window sum, not a calendar-day counter |
+| Twenty requests fired at once | `select … from wallets … for update` serialises them |
+| Approving a queued payment after freezing | `owner_resolve_review` re-runs every check at release |
+| A revoked agent's requests | `agents.status`, checked before the wallet is even read |
+| Editing the audit log afterwards | SHA-256 hash chain + `verify_audit_chain()` |
+| Turning the kill switch off from devtools | no browser role holds a write grant on any table |
+
+Money is `bigint` paise throughout. No floats — `0.1 + 0.2 !== 0.3`, and a cap
+that drifts by a rounding error is not a cap.
+
+Payments are **authorized then captured**, the way card rails work. `gw_authorize`
+places a hold: budget is reserved, money has not moved. `gw_capture` settles it,
+`gw_void` releases it. That window is what makes in-flight revocation a real
+guarantee — the hold is a database row, so the owner can recall from a phone
+while the agent runs on a laptop they have no access to.
 
 ---
 
-## 🧭 3-Layer Escalation Pipeline (Agent 1 → Agent 2 → Human)
+## The three layers
 
-Every spend decision runs through a tiered cascade instead of a single engine.
-Each tier resolves what it can and escalates only the hard cases — and if a tier
-is unavailable, the request falls through to the next one ("if one fails, another works").
+| Layer | Lives in | Job |
+|---|---|---|
+| **1 · Engine** | Postgres, inside the transaction | signature, nonce, freeze, allowlist, rolling cap |
+| **2 · Deep Risk Agent** | the gateway edge function | Groq scoring on what Layer 1 already permitted |
+| **3 · Human** | the owner console | releases what Layer 2 would not clear |
 
-| Layer | Guardian | Job | Routes |
-|---|---|---|---|
-| **Layer 1** | **Agent 1 — Frontline Rule Agent** | Fast, cheap deterministic checks (allowlist + spend limit). | `small & safe → approve` · `frozen / unlisted / over-limit → block` · `big chunk → Layer 2` |
-| **Layer 2** | **Agent 2 — Deep Risk Agent** | Deep Groq AI risk scoring + reasoning on the uncertain cases. | `SAFE → approve` · `SUSPICIOUS → Layer 3` · `CRITICAL → freeze` |
-| **Layer 3** | **Human-in-the-loop** | Wallet owner is the final authority. | `Approve / Reject` |
+Layer 1 has no health toggle, and that is the point. An earlier version let you
+switch the "frontline agent" offline to demonstrate failover — but that agent was
+a function in the browser bundle, and a control the client can switch off was
+never an enforcement layer to begin with.
 
-**Design principle — *easy to freeze, hard to approve*:** blocking or freezing can happen
-at any tier (including a single frontline reflex), but *releasing funds* on a risky spend
-requires a person. Large releases to trusted payees, agent disagreement, or an agent outage
-all land in the **Human Review Queue**, where funds stay withheld until the owner decides.
-
-**Failover:** each agent has a health toggle in the Escalation panel. Take **Agent 2** offline
-and risky spends route straight to the human; take **Agent 1** offline and every spend gets
-deep-reviewed at Layer 2. The pipeline never silently approves when a guardian is down.
+Layer 2 degrades rather than disappears: if the Groq call fails, the gateway
+falls back to a deterministic scorer, so losing the model makes review stricter
+rather than absent. A `policyFloor` derived from wallet policy alone is always
+applied, and the audit trail records `aiScore` and `policyFloor` separately so a
+policy control is never displayed as if it were a model judgement.
 
 ---
 
-| Layer | Technology |
-|---|---|
-| Frontend | React 18 + Vite |
-| Styling | Tailwind CSS |
-| AI Risk Engine | Groq API — LLaMA-3.3-70B Versatile |
-| Database | Supabase (PostgreSQL) with local in-memory fallback |
-| Enforcement Server | Node.js + Express (`index.js`) |
-| Prompt Security | 20+ regex injection/jailbreak pattern scanner |
+## Setup — about 20 minutes
 
----
+**1 · Supabase project.** Create one; note the URL, anon key, service role key.
 
-## 🚀 Run Locally
+**2 · Schema.** SQL Editor, in order:
+
+```
+supabase/migrations/0001_identity.sql
+supabase/migrations/0002_engine.sql
+supabase/migrations/0003_audit.sql
+```
+
+**3 · Auth email delivery via Resend.** Supabase's built-in SMTP is rate-limited
+to a handful of messages an hour and will silently throttle a live demo.
+
+* Resend → **API Keys** → create one with `Sending access`.
+* Resend → **Domains** → verify your domain (or use `onboarding@resend.dev` for
+  testing — it only delivers to your own Resend account address).
+* Supabase → **Project Settings → Authentication → SMTP Settings** → Enable
+  custom SMTP:
+
+  | Field | Value |
+  |---|---|
+  | Host | `smtp.resend.com` |
+  | Port | `465` |
+  | Username | `resend` |
+  | Password | your Resend API key |
+  | Sender email | `noreply@yourdomain.com` |
+
+* Supabase → **Authentication → URL Configuration** → set **Site URL** to your
+  deployed origin, and add it under **Redirect URLs**. Without this the
+  confirmation link bounces users to `localhost`.
+
+The Resend key is entered into the Supabase dashboard and never appears in this
+repository, in `.env`, or in the bundle.
+
+**4 · Gateway.**
 
 ```bash
-# 1. Install dependencies
+supabase link --project-ref <ref>
+supabase secrets set GROQ_API_KEY=gsk_...
+supabase secrets set ALLOWED_ORIGIN=https://your-app.vercel.app
+supabase functions deploy gateway --no-verify-jwt
+```
+
+`--no-verify-jwt` is correct here: the agent authenticates with a signature, not
+a Supabase session. It deliberately has no session to present.
+
+**5 · Frontend.**
+
+```bash
+cp .env.example .env    # VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY only
 npm install
-
-# 2. Add your Groq API key to .env (optional — built-in fallback works without it)
-# VITE_GROQ_API_KEY=gsk_...
-
-# 3. Start the React frontend (Vite dev server)
 npm run dev
-
-# 4. (Optional) Start the Express enforcement server
-node index.js
-
-# 5. (Optional) Run the autonomous agent simulator against the server
-node agent-simulator.js
 ```
 
----
+**6 · Deploy.** `vercel --prod`, then set the same two `VITE_` variables in the
+Vercel dashboard. Only those two — see the warning in `.env.example`.
 
-## 🎯 Demo Script (For Judges)
+**7 · The external agent** (optional, and the most convincing part of the demo):
 
-1. **Start Simulator** — Watch autonomous agent fire spend requests every 3.5s
-2. **Watch attacks get blocked** — `unknown-hacker.xyz`, `shady-endpoint.ru` hit the allowlist wall
-3. **In-Flight Revocation**: Submit a manual spend → immediately hit **FREEZE** → watch it log as `REVOKED` mid-execution *(Bonus metric)*
-4. **Auto-Kill**: Use "Malicious $450 Spend" preset → EXTREME risk score fires → wallet auto-freezes, alert banner appears
-5. **Prompt Injection**: Use "🚨 Injection Attack" preset → scanner blocks before submission, textarea shakes red
-6. **Audit Trail**: Click any transaction card → view full Groq AI reasoning, risk score, and agent intent
-7. **Live Policy Edit**: Add/remove allowlist entries and change spend limit in real-time
-8. **Layer 3 — Human Review**: Instruct a large spend to a trusted payee (e.g. `Reserve annual capacity on aws.amazon.com for $320`) → Agent 1 escalates → Agent 2 flags it high → it lands in the **Human Review Queue** with **Approve / Reject** buttons
-9. **Failover ("if one fails, another works")**: In the Escalation panel, take **Agent 2** offline → risky spends now route straight to you; take **Agent 1** offline → every spend gets deep-reviewed at Layer 2
-
----
-
-## 🔐 Security Layers (Attack Resistance)
-
-| Attack Vector | Defense |
-|---|---|
-| Unlisted payee | Allowlist check (server + client) |
-| Over-limit spend | Daily spend cap enforced at server |
-| Prompt injection / jailbreak | 20+ regex patterns scanned before any API call |
-| High risk AI payee | Groq AI risk score ≥ 75 → auto-freeze |
-| Wallet drain attempt | In-flight revocation + kill switch |
-| "Asking the agent nicely" | All rules enforced **outside** agent logic |
-
----
-
-## 📁 Project Structure
-
-```
-Halt/
-├── index.js                  ← Enforcement server (Express — the core guardrail)
-├── agent-simulator.js        ← Autonomous agent simulator for demo
-├── index.html                ← App entry point
-├── src/
-│   ├── App.jsx               ← Main app state, spend enforcement logic
-│   ├── index.css             ← "Signal" design system: tokens, HUD, dial, motion
-│   ├── components/
-│   │   ├── Hero.jsx          ← Scroll micro-interaction: dial fills, callouts type in
-│   │   ├── SecurityDial.jsx  ← The dial primitive + bracketed HUD callouts
-│   │   ├── Header.jsx        ← System status, threat counters
-│   │   ├── KillSwitchButton.jsx  ← Owner freeze control (built on the dial)
-│   │   ├── PolicyCard.jsx    ← Live allowlist + spend limit editor
-│   │   ├── AgentPlayground.jsx  ← Agent prompt console + attack presets
-│   │   ├── TransactionFeed.jsx  ← Live audit feed with in-flight section
-│   │   ├── AutoKillAlert.jsx ← Auto-freeze notification banner
-│   │   ├── EscalationPanel.jsx ← 3-layer cascade view + Human Review Queue
-│   │   ├── TransactionModal.jsx ← Full audit details modal (incl. escalation path)
-│   │   └── GroqConfigModal.jsx  ← Groq API key config
-│   └── lib/
-│       ├── escalationEngine.js ← 3-layer cascade: Agent 1 → Agent 2 → Human
-│       ├── groqEngine.js     ← AI risk scoring + prompt injection scanner
-│       ├── motion.js         ← Scroll reveal, count-up, typewriter, pulse hooks
-│       └── supabase.js       ← DB persistence with local fallback
-```
-
----
-
-## 🎛️ Interface — "Signal"
-
-Near-black instrument panel, acid-lime signal, machined hardware detailing.
-The **dial** is the organising idea: a brushed-metal disc under a lime progress
-torus ringed by 60 radial ticks. It appears twice —
-
-- **Hero** — fills as you scroll, lighting each guardian in turn while bracketed
-  HUD callouts type themselves in and enforcement coverage counts to 100%.
-- **Kill switch** — the same dial, interactive. The torus reads budget headroom
-  and drains as the agent spends; freezing turns the whole assembly red and
-  locks the hub.
-
-Shared vocabulary: corner-bracket frames (`.hud`), hairline panels (`.panel`),
-tick rails, outlined numerals that fill (`.numeral-outline`), and a scroll-reveal
-layer driven by `lib/motion.js`. Everything collapses gracefully under
-`prefers-reduced-motion`.
-
----
-
-## 🔐 Trust boundary
-
-`src/lib/promptSecurity.js` is the single place untrusted text is handled.
-Free-text input and model output are both treated as hostile.
-
-**1 · Injection scanning runs before any network call.** Text is matched against
-a categorised rule set on three normalised views: as written, case-folded with
-invisible characters stripped, and letters-only. That last pass is what catches
-`i g n o r e   a l l   r u l e s`; the de-leeting pass catches `byp@ss`. Rules
-cover instruction override, role hijack, guard evasion, fund drain,
-exfiltration, delimiter injection and encoded payloads. Zero-width characters
-anywhere in a spend instruction are refused outright.
-
-**2 · Owner commands are proposals, never actions.** The console understands
-administrative instructions — *"increase the daily budget to ₹80,000"*,
-*"add api.openai.com to the allowlist"*, *"freeze the wallet"* — but
-`parseOwnerCommand` only ever returns a proposal. It is rendered as a
-confirmation card that a human must click. The autonomous spend path has no
-route into `handleOwnerCommand`, so **an agent cannot widen its own authority**,
-and an injected instruction is refused by step 1 before it can be read as a
-command at all.
-
-Note the deliberate asymmetry: administrative verbs (*increase, set, allow,
-remove*) parse as owner commands; evasion verbs (*bypass, disable, override,
-skip review*) are blocked. "Raise the limit to ₹80,000" is a legitimate request.
-"Bypass the limit" is an attack.
-
-**3 · Every value crossing into enforcement is validated.**
-
-| Input | Guard |
-|---|---|
-| Amount (typed or model-returned) | finite, > 0, ≤ ₹1,00,00,000 — a `NaN` would silently pass every `>` comparison |
-| Payee | reduced to a bare hostname; scheme, credentials, port and path stripped, so `https://evil.com@aws.amazon.com/x` resolves to `aws.amazon.com` |
-| Unparseable payee | refused — never defaulted to a house vendor, which would pay someone the request never named |
-| Model `risk_score` | clamped 0–100 |
-| Model `verdict` / `threat_level` | restricted to the known enum |
-| Model reasoning | control characters stripped, length capped |
-
-Rejected requests are written to the audit feed as `IN` (input validator)
-entries rather than discarded — a refused request is still a security event.
-
-**4 · The agent's own prompt is fenced when shown to the reviewing model**, and
-labelled as data that must be described rather than obeyed.
-
-### On the risk numbers
-
-Layer 2 reports **two** figures and the audit trail keeps them apart:
-
-| Field | Meaning |
-|---|---|
-| `aiScore` | what the model (or heuristic fallback) actually returned |
-| `policyFloor` | deterministic minimum from wallet policy alone |
-| `riskScore` | the higher of the two — what the decision uses |
-
-The transaction inspector labels which one governed, so a policy control is
-never displayed as if it were a model judgement.
-
----
-
-## 🌐 Deploy
-
-**Frontend (Vercel/Netlify):**
 ```bash
-npm run build
-# Deploy the dist/ folder
+node agent/keygen.mjs                       # prints a public JWK
+# Owner console → Registered Agents → + → paste the JWK
+# paste the returned agent id into agent/agent.key.json
+export HALT_GATEWAY_URL=https://<ref>.supabase.co/functions/v1/gateway
+node agent/agent.mjs run
 ```
-
-**Backend (`index.js` → Render/Railway):**
-```
-Build: npm install
-Start: node index.js
-```
-
-Set env vars: `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_GROQ_API_KEY`
 
 ---
 
-## 👥 Team & Contribution Roles
+## The demo — 90 seconds
 
-We collaborated as a team to design, build, and document Halt:
+1. **Sign in.** The wallet, allowlist and kill switch belong to an account now.
+2. **Start the simulator.** Payments cross the console unsupervised. Nobody
+   approves any of them.
+3. **Recall one mid-flight.** Hit **Recall** on a held payment before it captures.
+   Then reload the page mid-hold — it is still there, still recallable, because
+   it is a row and not a timer.
+4. **Test Suite → Tamper.** Signs ₹400, submits ₹40,000. Dies at the gateway.
+5. **Test Suite → Race ×20.** Twenty at once. Watch the cap hold.
+6. **FREEZE** while payments are in flight. Every hold reverses, and the response
+   tells you how many.
+7. **The one that lands:** open devtools and run
+
+   ```js
+   await supabase.from('wallets').update({ frozen: false }).eq('frozen', true)
+   ```
+
+   Nothing happens. Then call `owner_set_frozen` — that works, because you are
+   the owner. The client can ask; it cannot write.
+8. **Verify chain integrity** → intact. Edit one `audit_log` row in the SQL
+   editor, verify again → broken, with the exact entry number.
+
+Run `node agent/agent.mjs attack race` from a second laptop if you have one. It
+makes the separation obvious in a way no slide does.
+
+---
+
+## Layout
+
+```
+supabase/migrations/0001_identity.sql   owners, wallets, agents, allowlist, RLS
+supabase/migrations/0002_engine.sql     authorize/capture/void, kill switch, owner RPCs
+supabase/migrations/0003_audit.sql      SHA-256 hash chain + verify + snapshot
+supabase/functions/gateway/             ECDSA verification, Groq risk, server-side keys
+agent/keygen.mjs                        mint an agent identity
+agent/agent.mjs                         the untrusted agent, with 5 attack modes
+src/lib/api.js                          every owner action, as an RPC call
+src/lib/agentKey.js                     browser agent keypair, non-extractable
+src/lib/promptSecurity.js               injection scanning + value validation
+src/components/AuthPage.jsx             sign in / sign up / reset
+```
+
+---
+
+## What changed in v3, and why
+
+This started as a browser-side enforcement demo. The rewrite was not cosmetic:
+
+- **Enforcement moved from the bundle into Postgres.** The old build evaluated
+  every rule in `App.jsx` and added to the day's total with `setPolicy`. The
+  Express server in `index.js` *did* implement server-side checks, but the
+  deployed frontend never called it — there is no `/api/spend` anywhere in the
+  shipped JavaScript. That file is gone; the database is the server now.
+- **RLS was `for all using (true) with check (true)`** on every table, with the
+  anon key public in the bundle. `is_frozen` was a publicly writable boolean:
+  one HTTP request from anywhere on the internet turned the kill switch off. No
+  browser role holds a write grant any more.
+- **A live Groq key shipped in the bundle**, because it was a `VITE_` variable
+  and Vite inlines those at build time. All model calls moved to the gateway.
+  The browser now holds no model key at all, so there is none to leak.
+- **The human review queue bypassed the kill switch.** Approving a queued item
+  added to the spend total with no re-check — freeze the wallet, click Approve,
+  money moved. Release now re-runs the whole policy check in the database.
+- **The spend cap had a time-of-check/time-of-use race.** A 3-second `setTimeout`
+  sat between reading the total and comparing against it, so concurrent requests
+  all read the same stale value. The row lock in `gw_authorize` removes it.
+- **In-flight revocation was a `setTimeout` in one browser tab.** Reload and the
+  payment vanished with no audit record. It is a hold with an expiry now.
+- **The transaction inspector displayed a fabricated receipt hash** generated
+  with `Math.random()`. Removed — it referred to nothing.
+- **There was no owner.** Anyone who opened the URL could freeze, unfreeze, raise
+  the cap and release held payments.
+
+Two gaps worth naming in the pitch before a judge names them for you:
+
+- **The counterparty is a ledger row, not a bank.** Production swaps `gw_capture`
+  for a payout API call or an on-chain transfer; the state machine already has
+  the right shape, because `held` is exactly where you would await settlement.
+- **The Layer 2 thresholds (75 / 40, and the 40%/90% exposure floors) are chosen,
+  not fitted.** Say so. "We would fit these against decline data we do not have
+  yet" is a better answer than pretending otherwise.
+
+---
+
+## Team
 
 * **Parth Raut** — Team Leader & Presentation Lead
-  - Designed the pitch strategy, coordinated requirements, and designed the pitch deck (PPT).
 * **Krupali Raut** — UI/UX Designer
-  - Designed the website visual style and helped with presentation assets.
 * **Preet Patil** — Lead Developer
-  - Built the Express gateway, set up Supabase database sync, and completed the backend & AI integrations.
 * **Archit Patil** — Full-Stack Developer
-  - Developed the frontend React console interface, set up safety filters, and ran simulation testing.
-
----
-
-## 🛠️ Credits & Acknowledgements
-
-This project was designed, structured, and implemented with the pairing assistance of:
-* **Antigravity AI** (Architecture, server security gateway, database synchronization, and Gemini/Groq LLM integrations).
-* **Stitch** (UI component design, dashboard layout system, and responsive elements).
 
 ---
 

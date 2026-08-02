@@ -1,32 +1,42 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Activity, Check, X, ShieldAlert, Search, Loader2, Rocket, ChevronRight
+  Activity, Check, X, ShieldAlert, Search, Loader2, Undo2, ChevronRight
 } from 'lucide-react';
 import { useReveal, stagger } from '../lib/motion';
 import { money } from '../lib/format';
 
 const FILTERS = [
   { id: 'all', label: 'All' },
-  { id: 'approved', label: 'Approved' },
-  { id: 'blocked', label: 'Blocked' },
+  { id: 'settled', label: 'Settled' },
+  { id: 'stopped', label: 'Stopped' },
 ];
 
-export function TransactionFeed({ transactions, pendingTxs = [], onSelectTransaction }) {
+const STOPPED = ['blocked', 'voided', 'rejected'];
+
+export function TransactionFeed({
+  transactions, pendingTxs = [], holdSeconds = 3, onRecall, onSelectTransaction,
+}) {
   const [filter, setFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [recalling, setRecalling] = useState(null);
   const [revealRef, shown] = useReveal();
 
   // Elapsed time for in-flight cards (re-renders every second)
   const [, setTick] = useState(0);
   useEffect(() => {
     if (pendingTxs.length === 0) return;
-    const t = setInterval(() => setTick(n => n + 1), 1000);
+    const t = setInterval(() => setTick(n => n + 1), 500);
     return () => clearInterval(t);
   }, [pendingTxs.length]);
 
+  const handleRecall = async (id) => {
+    setRecalling(id);
+    try { await onRecall(id); } finally { setRecalling(null); }
+  };
+
   const filtered = transactions.filter(tx => {
-    if (filter === 'approved' && tx.status !== 'approved') return false;
-    if (filter === 'blocked' && tx.status !== 'blocked' && tx.status !== 'revoked') return false;
+    if (filter === 'settled' && tx.status !== 'captured') return false;
+    if (filter === 'stopped' && !STOPPED.includes(tx.status)) return false;
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       return tx.payee.toLowerCase().includes(q) || (tx.reason && tx.reason.toLowerCase().includes(q));
@@ -78,13 +88,18 @@ export function TransactionFeed({ transactions, pendingTxs = [], onSelectTransac
         <div className="flex flex-col gap-2 anim-fade">
           <div className="label !text-info flex items-center gap-1.5">
             <Loader2 className="w-3 h-3 animate-spin" />
-            {pendingTxs.length} in-flight — freeze now to revoke mid-execution
+            {pendingTxs.length} held — budget reserved, no money has moved
           </div>
 
           {pendingTxs.map(ptx => {
-            const elapsed = Math.floor((Date.now() - ptx.startedAt) / 1000);
-            const remaining = Math.max(0, 3 - elapsed);
-            const progress = Math.min(100, (elapsed / 3) * 100);
+            // The hold is a database row with an expiry, not a timer in this
+            // tab. Reload the page and it is still here, still recallable.
+            const started = new Date(ptx.timestamp).getTime();
+            const expires = ptx.expiresAt ? new Date(ptx.expiresAt).getTime() : started + holdSeconds * 1000;
+            const total = Math.max(1, expires - started);
+            const remaining = Math.max(0, expires - Date.now());
+            const progress = Math.min(100, ((total - remaining) / total) * 100);
+
             return (
               <div
                 key={ptx.id}
@@ -108,10 +123,22 @@ export function TransactionFeed({ transactions, pendingTxs = [], onSelectTransac
                     />
                   </div>
                   <div className="flex justify-between mt-1.5 font-mono text-[9px]">
-                    <span className="text-info tracking-wider">PROCESSING</span>
-                    <span className="text-ink-faint tabular-nums">{remaining}s</span>
+                    <span className="text-info tracking-wider">AUTHORIZED · AWAITING CAPTURE</span>
+                    <span className="text-ink-faint tabular-nums">{(remaining / 1000).toFixed(1)}s</span>
                   </div>
                 </div>
+
+                <button
+                  onClick={() => handleRecall(ptx.id)}
+                  disabled={recalling === ptx.id}
+                  title="Void this hold — the money never moves"
+                  className="btn btn-ghost !py-1.5 !px-2.5 !text-[10px] flex-shrink-0 hover:!border-danger/50 hover:!text-danger"
+                >
+                  {recalling === ptx.id
+                    ? <Loader2 className="w-3 h-3 animate-spin" />
+                    : <Undo2 className="w-3 h-3" />}
+                  Recall
+                </button>
               </div>
             );
           })}
@@ -147,10 +174,10 @@ export function TransactionFeed({ transactions, pendingTxs = [], onSelectTransac
  * can see whether a rule, the model, or a person made the call.
  */
 const ORIGIN = {
-  agent1:    { code: 'L1', title: 'Decided by Agent 1 — frontline rules' },
-  agent2:    { code: 'L2', title: 'Decided by Agent 2 — deep risk review' },
-  human:     { code: 'L3', title: 'Decided by the wallet owner' },
-  validator: { code: 'IN', title: 'Refused at the input validator' },
+  engine:          { code: 'L1', title: 'Decided by the engine — Postgres, inside the transaction' },
+  agent2:          { code: 'L2', title: 'Decided by Agent 2 — deep risk review in the gateway' },
+  owner:           { code: 'L3', title: 'Decided by the wallet owner' },
+  'human-pending': { code: 'L3', title: 'Waiting on the wallet owner' },
 };
 
 function DecidedBy({ tx }) {
@@ -167,9 +194,17 @@ function DecidedBy({ tx }) {
   );
 }
 
+/** Settled, recalled-in-flight, or refused outright. */
+const LABEL = {
+  captured: 'Captured',
+  voided:   'Voided',
+  rejected: 'Rejected',
+  blocked:  'Blocked',
+};
+
 function TxCard({ tx, index, onSelect }) {
-  const isApproved = tx.status === 'approved';
-  const isRevoked = tx.status === 'revoked';
+  const isApproved = tx.status === 'captured';
+  const isVoided = tx.status === 'voided';
   const risk = tx.risk_score ?? tx.riskScore ?? 10;
 
   const formattedTime = new Date(tx.created_at || tx.timestamp).toLocaleTimeString([], {
@@ -178,7 +213,7 @@ function TxCard({ tx, index, onSelect }) {
 
   const tone = isApproved
     ? { color: 'var(--lime)',   badge: 'badge-ok',     border: 'rgba(198,245,60,0.22)' }
-    : isRevoked
+    : isVoided
     ? { color: 'var(--info)',   badge: 'badge-info',   border: 'rgba(90,209,255,0.24)' }
     : { color: 'var(--danger)', badge: 'badge-danger', border: 'rgba(255,68,56,0.24)' };
 
@@ -194,8 +229,8 @@ function TxCard({ tx, index, onSelect }) {
     >
       <div className="flex items-center justify-between gap-2">
         <span className={`badge ${tone.badge} !text-[9px]`}>
-          {isApproved ? <Check className="w-3 h-3" /> : isRevoked ? <Rocket className="w-3 h-3" /> : <X className="w-3 h-3" />}
-          {isApproved ? 'Approved' : isRevoked ? 'Revoked' : 'Blocked'}
+          {isApproved ? <Check className="w-3 h-3" /> : isVoided ? <Undo2 className="w-3 h-3" /> : <X className="w-3 h-3" />}
+          {LABEL[tx.status] ?? tx.status}
         </span>
         <div className="flex items-center gap-1.5 flex-shrink-0">
           <DecidedBy tx={tx} />

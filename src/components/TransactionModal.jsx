@@ -22,7 +22,7 @@ export function TransactionModal({ transaction, onClose }) {
 
   if (!transaction) return null;
 
-  const isApproved = transaction.status === 'approved';
+  const isApproved = transaction.status === 'captured';
   const risk = transaction.risk_score ?? transaction.riskScore ?? 15;
   const aiReasoning = transaction.ai_reasoning || transaction.aiReasoning || transaction.reason;
   const riskColor = risk >= 75 ? 'var(--danger)' : risk >= 40 ? 'var(--warn)' : 'var(--lime)';
@@ -60,7 +60,9 @@ export function TransactionModal({ transaction, onClose }) {
               <span className={`badge ${isApproved ? 'badge-ok' : 'badge-danger'}`}>
                 {transaction.status}
               </span>
-              <span className="font-mono text-[10px] text-ink-faint truncate">TX #{transaction.id}</span>
+              <span className="font-mono text-[10px] text-ink-faint truncate" title={transaction.id}>
+                {String(transaction.id).slice(0, 8)}…
+              </span>
             </div>
             <h2 className="display text-3xl text-ink mt-1.5 tabular-nums">
               {money(transaction.amount)}
@@ -150,18 +152,29 @@ export function TransactionModal({ transaction, onClose }) {
         <div className="grid grid-cols-2 gap-3">
           <Meta icon={Bot} label="Requesting Agent" value={transaction.agent_name || transaction.agentName || 'Main compute agent'} />
           <Meta icon={Globe} label="Payee Endpoint" value={transaction.payee} />
-          <Meta icon={Activity} label="Threat Classification" value={transaction.threat_level || transaction.threatLevel || 'LOW'} />
-          <Meta icon={Clock} label="Enforcement Latency" value={transaction.latency_ms != null || transaction.latencyMs != null ? `${transaction.latency_ms ?? transaction.latencyMs}ms` : '0ms'} />
+          <Meta icon={Activity} label="Threat Classification" value={transaction.threatLevel || 'LOW'} />
           <Meta
             icon={Calendar}
-            label="Timestamp"
-            value={new Date(transaction.created_at || transaction.timestamp).toLocaleString()}
+            label="Requested"
+            value={new Date(transaction.timestamp).toLocaleString()}
           />
-          {transaction.tx_hash || transaction.txHash ? (
-            <Meta icon={Key} label="Payment Receipt Hash" value={(transaction.tx_hash || transaction.txHash).slice(0, 18) + '...'} fullValue={transaction.tx_hash || transaction.txHash} />
-          ) : (
-            <Meta icon={Key} label="Payment Reference" value="N/A (Blocked/Pending)" />
-          )}
+          <Meta
+            icon={Clock}
+            label="Settled"
+            value={transaction.settledAt ? new Date(transaction.settledAt).toLocaleTimeString() : 'Not settled'}
+          />
+          {/*
+            This used to render a random 64-hex string labelled "Payment Receipt
+            Hash". It was generated client-side with Math.random() and referred
+            to nothing — a fabricated settlement identifier presented as real.
+            The spend's actual primary key is a reference that resolves.
+          */}
+          <Meta
+            icon={Key}
+            label="Payment Reference"
+            value={String(transaction.id).slice(0, 18) + '…'}
+            fullValue={transaction.id}
+          />
         </div>
 
         {(transaction.agent_prompt || transaction.agentPrompt) && (

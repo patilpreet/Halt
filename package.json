@@ -1,24 +1,19 @@
 {
   "name": "halt",
-  "version": "2.0.0",
-  "description": "Autonomous AI Agent Wallet Enforcement & Security Platform with React, Supabase, and Groq AI",
-  "main": "index.js",
+  "version": "3.0.0",
+  "description": "Wallet-layer spend enforcement for autonomous AI agents — enforced in Postgres, not in the agent",
   "type": "module",
   "scripts": {
-    "start": "vite build && node index.js",
-    "dev": "vite build && node index.js",
-    "dev:server": "node index.js",
-    "dev:client": "vite",
+    "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "simulate": "node agent-simulator.js"
+    "test:sig": "node agent/sigtest.mjs",
+    "keygen": "node agent/keygen.mjs",
+    "agent": "node agent/agent.mjs",
+    "attack": "node agent/agent.mjs attack"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "groq-sdk": "^0.7.0",
     "lucide-react": "^0.428.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
