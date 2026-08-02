@@ -103,26 +103,41 @@ function calculateAiRisk(payee, amount) {
 }
 
 // Log & Persist Transaction
-async function logTransaction(payee, amount, status, reason, agentPrompt = "") {
+async function logTransaction(payee, amount, status, reason, agentPrompt = "", agentName = "Main compute agent", decidedBy = "agent1", latencyMs = 0) {
   const riskScore = calculateAiRisk(payee, amount);
+  let threatLevel = "LOW";
+  if (riskScore >= 75) threatLevel = "EXTREME";
+  else if (riskScore >= 50) threatLevel = "HIGH";
+  else if (riskScore >= 30) threatLevel = "MEDIUM";
+
+  const txHash = status === 'approved' 
+    ? '0x' + Array.from({length: 64}, () => Math.floor(Math.random()*16).toString(16)).join('')
+    : '';
+
   const tx = {
-    id: nextId++,
     payee,
     amount,
-    status, // "approved" | "blocked"
+    status, // "approved" | "blocked" | "revoked"
     reason,
     risk_score: riskScore,
-    ai_reasoning: `Groq AI Guard: Analyzed request to ${payee} (₹${amount}). Risk score evaluated at ${riskScore}%. Reason: ${reason}`,
+    ai_reasoning: `Enforcement Guard: Analyzed request to ${payee} (₹${amount}). Risk score evaluated at ${riskScore}%. Reason: ${reason}`,
     agent_prompt: agentPrompt,
+    agent_name: agentName,
+    decided_by: decidedBy,
+    threat_level: threatLevel,
+    latency_ms: latencyMs,
+    tx_hash: txHash,
     created_at: new Date().toISOString(),
   };
 
-  TRANSACTIONS.unshift(tx);
-  TRANSACTIONS = TRANSACTIONS.slice(0, 100);
-
   if (supabase) {
     try {
-      await supabase.from('kill_switch_transactions').insert([tx]);
+      const { data, error } = await supabase.from('kill_switch_transactions').insert([tx]).select();
+      if (!error && data && data.length > 0) {
+        tx.id = data[0].id; // Use DB serial ID
+      } else {
+        tx.id = nextId++;
+      }
       if (status === 'approved') {
         await supabase.from('kill_switch_policy').upsert({
           id: 'default_policy',
@@ -131,10 +146,15 @@ async function logTransaction(payee, amount, status, reason, agentPrompt = "") {
         });
       }
     } catch (e) {
-      console.warn("Supabase transaction save error:", e.message);
+      console.warn("Supabase transaction save error, falling back to local ID:", e.message);
+      tx.id = nextId++;
     }
+  } else {
+    tx.id = nextId++;
   }
 
+  TRANSACTIONS.unshift(tx);
+  TRANSACTIONS = TRANSACTIONS.slice(0, 100);
   return tx;
 }
 
@@ -142,7 +162,9 @@ async function logTransaction(payee, amount, status, reason, agentPrompt = "") {
 
 // Core Spend API called by AI agents
 app.post("/api/spend", async (req, res) => {
-  const { payee, amount, agentPrompt } = req.body;
+  const start = Date.now();
+  const { payee, amount, agentPrompt, agentName } = req.body;
+  const selectedAgent = agentName || "Main compute agent";
 
   if (!payee || typeof amount !== "number" || amount <= 0) {
     return res.status(400).json({ error: "payee and positive amount are required" });
@@ -150,32 +172,39 @@ app.post("/api/spend", async (req, res) => {
 
   // Rule 1: Emergency Freeze (Kill Switch)
   if (POLICY.is_frozen) {
-    const tx = await logTransaction(payee, amount, "blocked", "🛑 BLOCKED: Wallet is frozen by owner emergency kill switch", agentPrompt);
+    const latencyMs = Date.now() - start;
+    const tx = await logTransaction(payee, amount, "blocked", "🛑 BLOCKED: Wallet is frozen by owner emergency kill switch", agentPrompt, selectedAgent, "agent1", latencyMs);
     return res.json({ approved: false, transaction: tx });
   }
 
   // Rule 2: Payee Allowlist
   const isAllowlisted = POLICY.allowlist.some(p => p.toLowerCase() === payee.toLowerCase() || payee.toLowerCase().endsWith(p.toLowerCase()));
   if (!isAllowlisted) {
-    const tx = await logTransaction(payee, amount, "blocked", `🛑 BLOCKED: Payee "${payee}" is not in owner allowlist`, agentPrompt);
+    const latencyMs = Date.now() - start;
+    const tx = await logTransaction(payee, amount, "blocked", `🛑 BLOCKED: Payee "${payee}" is not in owner allowlist`, agentPrompt, selectedAgent, "agent1", latencyMs);
     return res.json({ approved: false, transaction: tx });
   }
 
   // Rule 3: Spend Limit
   if (POLICY.daily_spent + amount > POLICY.spend_limit) {
+    const latencyMs = Date.now() - start;
     const tx = await logTransaction(
       payee,
       amount,
       "blocked",
       `🛑 BLOCKED: Would exceed spend limit ($${POLICY.daily_spent}/$${POLICY.spend_limit} used)`,
-      agentPrompt
+      agentPrompt,
+      selectedAgent,
+      "agent1",
+      latencyMs
     );
     return res.json({ approved: false, transaction: tx });
   }
 
   // All checks passed
   POLICY.daily_spent += amount;
-  const tx = await logTransaction(payee, amount, "approved", "✅ Approved by Kill Switch Policy & Groq AI", agentPrompt);
+  const latencyMs = Date.now() - start;
+  const tx = await logTransaction(payee, amount, "approved", "✅ Approved by Kill Switch Policy & Groq AI", agentPrompt, selectedAgent, "agent1", latencyMs);
   return res.json({ approved: true, transaction: tx });
 });
 

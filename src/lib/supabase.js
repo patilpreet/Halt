@@ -114,10 +114,15 @@ export async function saveTransactionToDb(tx) {
     amount: tx.amount,
     status: tx.status,
     reason: tx.reason || '',
-    risk_score: tx.riskScore || 0,
-    ai_reasoning: tx.aiReasoning || '',
-    agent_prompt: tx.agentPrompt || '',
-    created_at: tx.timestamp || new Date().toISOString()
+    risk_score: tx.riskScore ?? tx.risk_score ?? 0,
+    ai_reasoning: tx.aiReasoning ?? tx.ai_reasoning ?? '',
+    agent_prompt: tx.agentPrompt ?? tx.agent_prompt ?? '',
+    agent_name: tx.agentName ?? tx.agent_name ?? 'Main compute agent',
+    decided_by: tx.decidedBy ?? tx.decided_by ?? 'agent1',
+    threat_level: tx.threatLevel ?? tx.threat_level ?? 'LOW',
+    latency_ms: tx.latencyMs ?? tx.latency_ms ?? 0,
+    tx_hash: tx.txHash ?? tx.tx_hash ?? '',
+    created_at: tx.timestamp ?? tx.created_at ?? new Date().toISOString()
   };
 
   localTransactions.unshift(transactionObj);
@@ -130,7 +135,10 @@ export async function saveTransactionToDb(tx) {
   if (!supabase) return transactionObj;
 
   try {
-    await supabase.from('kill_switch_transactions').insert([transactionObj]);
+    const { data, error } = await supabase.from('kill_switch_transactions').insert([transactionObj]).select();
+    if (!error && data && data.length > 0) {
+      transactionObj.id = data[0].id;
+    }
     if (tx.status === 'approved') {
       await supabase
         .from('kill_switch_policy')

@@ -24,6 +24,11 @@ create table if not exists public.kill_switch_transactions (
   risk_score int default 0,
   ai_reasoning text default '',
   agent_prompt text default '',
+  agent_name text default 'Main compute agent',
+  decided_by text default 'agent1',
+  threat_level text default 'LOW',
+  latency_ms integer default 0,
+  tx_hash text default '',
   created_at timestamptz default now()
 );
 

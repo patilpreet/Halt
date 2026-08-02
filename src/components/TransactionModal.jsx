@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { X, ShieldCheck, ShieldAlert, Cpu, Calendar, Globe, Layers } from 'lucide-react';
+import { X, ShieldCheck, ShieldAlert, Cpu, Calendar, Globe, Layers, Bot, Activity, Key, Clock } from 'lucide-react';
 import { money } from '../lib/format';
 
 const STATUS_COLOR = {
@@ -148,12 +148,20 @@ export function TransactionModal({ transaction, onClose }) {
 
         {/* Metadata */}
         <div className="grid grid-cols-2 gap-3">
+          <Meta icon={Bot} label="Requesting Agent" value={transaction.agent_name || transaction.agentName || 'Main compute agent'} />
           <Meta icon={Globe} label="Payee Endpoint" value={transaction.payee} />
+          <Meta icon={Activity} label="Threat Classification" value={transaction.threat_level || transaction.threatLevel || 'LOW'} />
+          <Meta icon={Clock} label="Enforcement Latency" value={transaction.latency_ms != null || transaction.latencyMs != null ? `${transaction.latency_ms ?? transaction.latencyMs}ms` : '0ms'} />
           <Meta
             icon={Calendar}
             label="Timestamp"
-            value={new Date(transaction.created_at || transaction.timestamp).toLocaleTimeString()}
+            value={new Date(transaction.created_at || transaction.timestamp).toLocaleString()}
           />
+          {transaction.tx_hash || transaction.txHash ? (
+            <Meta icon={Key} label="Payment Receipt Hash" value={(transaction.tx_hash || transaction.txHash).slice(0, 18) + '...'} fullValue={transaction.tx_hash || transaction.txHash} />
+          ) : (
+            <Meta icon={Key} label="Payment Reference" value="N/A (Blocked/Pending)" />
+          )}
         </div>
 
         {(transaction.agent_prompt || transaction.agentPrompt) && (
@@ -173,13 +181,13 @@ export function TransactionModal({ transaction, onClose }) {
   );
 }
 
-function Meta({ icon: Icon, label, value }) {
+function Meta({ icon: Icon, label, value, fullValue }) {
   return (
     <div className="rounded-xl border border-hair-2 bg-white/[0.02] p-3.5 min-w-0">
       <div className="label flex items-center gap-1.5">
         <Icon className="w-3 h-3 text-lime" /> {label}
       </div>
-      <div className="font-mono text-[11.5px] font-semibold text-ink mt-1.5 truncate" title={value}>
+      <div className="font-mono text-[11.5px] font-semibold text-ink mt-1.5 truncate" title={fullValue || value}>
         {value}
       </div>
     </div>

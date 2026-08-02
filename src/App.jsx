@@ -46,12 +46,12 @@ const dedupeById = (list) => {
 
 /** The autonomous agent's scripted run — one spend attempt per tick. */
 const SIM_ATTEMPTS = [
-  { payee: 'vendor-a.com',       amount: 3500,  prompt: 'Purchase micro tier instance' },        // L1 → approve (small & safe)
-  { payee: 'aws.amazon.com',     amount: 24000, prompt: 'Scale production S3 storage' },         // L1 → L2 suspicious → human
-  { payee: 'cloud-compute.io',   amount: 9000,  prompt: 'Renew container registry' },            // L1 → approve
-  { payee: 'unknown-hacker.xyz', amount: 4500,  prompt: 'Download unverified scraper tool' },    // L1 → block (allowlist wall)
-  { payee: 'vendor-b.com',       amount: 60000, prompt: 'Renew SaaS analytics sub' },            // L1 → block (over limit)
-  { payee: 'shady-endpoint.ru',  amount: 1800,  prompt: 'Obtain proxy IP pool' },                // L1 → block (allowlist wall)
+  { payee: 'vendor-a.com',       amount: 3500,  prompt: 'Purchase micro tier instance', agentName: 'Cloud Provisioner' },        // L1 → approve (small & safe)
+  { payee: 'aws.amazon.com',     amount: 24000, prompt: 'Scale production S3 storage', agentName: 'Storage Orchestrator' },         // L1 → L2 suspicious → human
+  { payee: 'cloud-compute.io',   amount: 9000,  prompt: 'Renew container registry', agentName: 'DevOps Agent' },            // L1 → approve
+  { payee: 'unknown-hacker.xyz', amount: 4500,  prompt: 'Download unverified scraper tool', agentName: 'Scraper Bot' },    // L1 → block (allowlist wall)
+  { payee: 'vendor-b.com',       amount: 60000, prompt: 'Renew SaaS analytics sub', agentName: 'SaaS Auditor' },            // L1 → block (over limit)
+  { payee: 'shady-endpoint.ru',  amount: 1800,  prompt: 'Obtain proxy IP pool', agentName: 'Network Agent' },                // L1 → block (allowlist wall)
 ];
 
 export default function App() {
@@ -135,7 +135,10 @@ export default function App() {
   };
 
   // Core Spend Enforcement Logic
-  const handleSendSpendRequest = async ({ payee, amount, agentPrompt }) => {
+  const handleSendSpendRequest = async ({ payee, amount, agentPrompt, agentName }) => {
+    const startTimestamp = Date.now();
+    const selectedAgent = agentName || 'Main compute agent';
+
     // Boundary validation. Anything malformed is refused and written to the
     // audit log rather than thrown away silently — a rejected request is still
     // a security event the owner should be able to see.
@@ -145,6 +148,7 @@ export default function App() {
       safeAmount = sanitizeAmount(amount);
     } catch (err) {
       if (!(err instanceof InvalidRequestError)) throw err;
+      const latencyMs = Date.now() - startTimestamp;
       const rejected = await saveTransactionToDb({
         id: nextTxId(),
         payee: String(payee ?? 'unknown').slice(0, 120),
@@ -154,7 +158,11 @@ export default function App() {
         riskScore: 100,
         aiReasoning: `Request refused at the input boundary: ${err.reason} It never reached the escalation cascade.`,
         agentPrompt: agentPrompt || '',
+        agentName: selectedAgent,
         decidedBy: 'validator',
+        threatLevel: 'HIGH',
+        latencyMs,
+        txHash: '',
         trace: [{ layer: 0, name: 'Input Validator', status: 'BLOCK', detail: err.reason }],
         timestamp: new Date().toISOString(),
       });
@@ -177,6 +185,7 @@ export default function App() {
 
     // Check if wallet was FROZEN during the processing window — IN-FLIGHT REVOCATION
     if (policyRef.current.is_frozen) {
+      const latencyMs = Date.now() - startTimestamp;
       const revokedTx = {
         id: nextTxId(),
         payee,
@@ -186,6 +195,11 @@ export default function App() {
         riskScore: 55,
         aiReasoning: `Transaction to "${payee}" (${money(amount)}) was actively processing when the owner activated the kill switch. Access revoked mid-execution — funds protected.`,
         agentPrompt: agentPrompt || '',
+        agentName: selectedAgent,
+        decidedBy: 'human',
+        threatLevel: 'HIGH',
+        latencyMs,
+        txHash: '',
         timestamp: new Date().toISOString()
       };
       const savedRevoked = await saveTransactionToDb(revokedTx);
@@ -210,6 +224,18 @@ export default function App() {
     const riskScore = result.riskScore;
     const aiReasoning = result.summary;
 
+    const approved = result.action === DECISION.APPROVE;
+    const latencyMs = Date.now() - startTimestamp;
+
+    let threatLevel = 'LOW';
+    if (riskScore >= 75) threatLevel = 'EXTREME';
+    else if (riskScore >= 50) threatLevel = 'HIGH';
+    else if (riskScore >= 30) threatLevel = 'MEDIUM';
+
+    const txHash = approved 
+      ? '0x' + Array.from({length: 64}, () => Math.floor(Math.random()*16).toString(16)).join('')
+      : '';
+
     // ── LAYER 3 · HUMAN — held for owner decision (no money moves yet) ──
     if (result.action === DECISION.HOLD) {
       const heldItem = {
@@ -217,7 +243,12 @@ export default function App() {
         payee,
         amount,
         agentPrompt: agentPrompt || '',
-        result,
+        agentName: selectedAgent,
+        result: {
+          ...result,
+          threatLevel,
+          latencyMs,
+        },
       };
       // The agent keeps working; risky requests wait in the queue. Dedupe identical ones.
       setHumanQueue(prev =>
@@ -240,8 +271,6 @@ export default function App() {
       });
     }
 
-    const approved = result.action === DECISION.APPROVE;
-
     const txObj = {
       id: nextTxId(),
       payee,
@@ -251,7 +280,11 @@ export default function App() {
       riskScore,
       aiReasoning,
       agentPrompt: agentPrompt || '',
+      agentName: selectedAgent,
       decidedBy: result.decidedBy,
+      threatLevel,
+      latencyMs,
+      txHash,
       trace: result.trace,
       timestamp: new Date().toISOString()
     };
@@ -282,6 +315,10 @@ export default function App() {
     setHumanQueue(prev => prev.filter(h => h.id !== heldId));
 
     const approved = decision === 'approve';
+    const txHash = approved 
+      ? '0x' + Array.from({length: 64}, () => Math.floor(Math.random()*16).toString(16)).join('')
+      : '';
+
     const txObj = {
       id: nextTxId(),
       payee: item.payee,
@@ -293,7 +330,11 @@ export default function App() {
       riskScore: item.result?.riskScore ?? 50,
       aiReasoning: item.result?.summary || '',
       agentPrompt: item.agentPrompt || '',
+      agentName: item.agentName || 'Main compute agent',
       decidedBy: 'human',
+      threatLevel: item.result?.threatLevel || 'MEDIUM',
+      latencyMs: item.result?.latencyMs || 0,
+      txHash,
       trace: [...(item.result?.trace || []), {
         layer: 3, name: 'Human · Wallet Owner', status: approved ? 'APPROVE' : 'REJECT',
         detail: 'resolved by the human-in-the-loop'
@@ -368,6 +409,7 @@ export default function App() {
         payee: item.payee,
         amount: item.amount,
         agentPrompt: item.prompt,
+        agentName: item.agentName,
       });
     }, 3500);
 
