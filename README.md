@@ -232,14 +232,22 @@ Set env vars: `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_GROQ_API_KEY`
 
 We collaborated as a team to design, build, and document Halt:
 
-* **Parth Raut** (Team Leader & Product Manager)
-  - Designed the pitch strategy, defined requirement criteria, and coordinated the project presentation and documentation.
-* **Preet Patil** (Lead Full-Stack Developer)
-  - Built the Express gateway server, set up Supabase synchronization, and integrated the Groq LLaMA and Gemini AI engines.
-* **Krupali Raut** (UI/UX Developer)
-  - Designed the "Signal" HUD interface dashboard, styled the interactive dials, and developed the visual status indicators.
-* **Archit Patil** (AI Security Analyst & Quality Assurance)
-  - Developed the input sanitization filters (regex scanner), mapped out attack presets, and verified threat scenarios.
+* **Parth Raut** — Team Leader & Presentation Lead
+  - Designed the pitch strategy, coordinated requirements, and designed the pitch deck (PPT).
+* **Krupali Raut** — UI/UX Designer
+  - Designed the website visual style and helped with presentation assets.
+* **Preet Patil** — Lead Developer
+  - Built the Express gateway, set up Supabase database sync, and completed the backend & AI integrations.
+* **Archit Patil** — Full-Stack Developer
+  - Developed the frontend React console interface, set up safety filters, and ran simulation testing.
+
+---
+
+## 🛠️ Credits & Acknowledgements
+
+This project was designed, structured, and implemented with the pairing assistance of:
+* **Antigravity AI** (Architecture, server security gateway, database synchronization, and Gemini/Groq LLM integrations).
+* **Stitch** (UI component design, dashboard layout system, and responsive elements).
 
 ---
 
