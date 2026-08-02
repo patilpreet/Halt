@@ -1,0 +1,744 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ═══════════════════════════════════════════════════════════════════════
+   HALT — "Signal" theme
+   Near-black instrument panel + acid-lime signal. Every surface reads as
+   machined hardware: hairline borders, corner brackets, bloom, tick marks.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* Ground */
+  --bg: #060606;
+  --bg-2: #0A0A0A;
+  --surface: #0F0F0F;
+  --surface-2: #141414;
+  --surface-3: #1A1A1A;
+  --border: #1F1F1F;
+  --border-2: #2A2A2A;
+
+  /* Type */
+  --text: #FFFFFF;
+  --text-2: #B5B5AE;
+  --text-muted: #6E6E68;
+  --text-faint: #3D3D3A;
+
+  /* Signal */
+  --lime: #C6F53C;
+  --lime-bright: #E9FF7A;
+  --lime-hot: #FCFF70;
+  --lime-deep: #7FA81E;
+  --lime-dark: #1A2408;
+  --lime-a10: rgba(198, 245, 60, 0.10);
+  --lime-a20: rgba(198, 245, 60, 0.20);
+  --lime-a35: rgba(198, 245, 60, 0.35);
+  --lime-a60: rgba(198, 245, 60, 0.60);
+
+  /* Semantics */
+  --ok: #C6F53C;
+  --ok-dim: rgba(198, 245, 60, 0.12);
+  --danger: #FF4438;
+  --danger-dim: rgba(255, 68, 56, 0.12);
+  --warn: #FFB020;
+  --warn-dim: rgba(255, 176, 32, 0.12);
+  --hold: #FFC53D;
+  --hold-dim: rgba(255, 197, 61, 0.12);
+  --info: #5AD1FF;
+  --info-dim: rgba(90, 209, 255, 0.12);
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  --hud-c: var(--lime);
+  --hud-l: 9px;
+}
+
+@layer base {
+  html { scroll-behavior: smooth; }
+
+  body {
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: 'Outfit', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Ambient instrument-panel ground: fine grid + two lime blooms. */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px);
+    background-size: 56px 56px;
+    mask-image: radial-gradient(ellipse 90% 70% at 50% 0%, #000 30%, transparent 100%);
+  }
+
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(60rem 40rem at 12% -5%, rgba(198, 245, 60, 0.07), transparent 60%),
+      radial-gradient(50rem 36rem at 95% 12%, rgba(198, 245, 60, 0.045), transparent 60%);
+    animation: ambientDrift 18s ease-in-out infinite alternate;
+  }
+
+  ::selection { background: var(--lime); color: #0A0A0A; }
+
+  input, textarea { color-scheme: dark; }
+}
+
+/* ─────────────────────────── Surfaces ─────────────────────────── */
+
+.panel {
+  position: relative;
+  background: linear-gradient(180deg, var(--surface) 0%, var(--bg-2) 100%);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  transition: border-color 0.25s var(--ease-out), transform 0.25s var(--ease-out),
+              box-shadow 0.25s var(--ease-out);
+}
+
+/* Hairline of light along the top edge — the "machined" tell. */
+.panel::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  border-radius: 18px 18px 0 0;
+  background: linear-gradient(90deg, transparent, rgba(198, 245, 60, 0.28), transparent);
+  opacity: 0.7;
+}
+
+.panel-hover:hover {
+  border-color: var(--border-2);
+  transform: translateY(-2px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px var(--lime-a10);
+}
+
+.panel-live {
+  border-color: rgba(198, 245, 60, 0.22);
+  box-shadow: 0 0 0 1px var(--lime-a10), 0 0 40px -12px var(--lime-a35);
+}
+
+/* ──────────────────────── HUD corner brackets ───────────────────────
+   Four L-shaped corners drawn with eight background gradients — the
+   bracket motif from the reference, reusable on any box.            */
+
+.hud {
+  position: relative;
+}
+
+.hud::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(var(--hud-c), var(--hud-c)) 0 0 / var(--hud-l) 1px no-repeat,
+    linear-gradient(var(--hud-c), var(--hud-c)) 0 0 / 1px var(--hud-l) no-repeat,
+    linear-gradient(var(--hud-c), var(--hud-c)) 100% 0 / var(--hud-l) 1px no-repeat,
+    linear-gradient(var(--hud-c), var(--hud-c)) 100% 0 / 1px var(--hud-l) no-repeat,
+    linear-gradient(var(--hud-c), var(--hud-c)) 0 100% / var(--hud-l) 1px no-repeat,
+    linear-gradient(var(--hud-c), var(--hud-c)) 0 100% / 1px var(--hud-l) no-repeat,
+    linear-gradient(var(--hud-c), var(--hud-c)) 100% 100% / var(--hud-l) 1px no-repeat,
+    linear-gradient(var(--hud-c), var(--hud-c)) 100% 100% / 1px var(--hud-l) no-repeat;
+  transition: opacity 0.25s var(--ease-out);
+}
+
+.hud-danger { --hud-c: var(--danger); }
+.hud-hold   { --hud-c: var(--hold); }
+.hud-muted  { --hud-c: var(--text-faint); }
+
+/* Brackets that spread on hover — used on primary actions. */
+.hud-flare::after { transition: inset 0.3s var(--ease-out), opacity 0.25s var(--ease-out); }
+.hud-flare:hover::after { inset: -3px; }
+
+/* ─────────────────────────── Type ─────────────────────────── */
+
+.label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.display {
+  font-family: 'Archivo', sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+  line-height: 0.94;
+}
+
+/* Big hollow numerals that fill in — the "100%" treatment. */
+.numeral-outline {
+  font-family: 'Archivo', sans-serif;
+  font-weight: 800;
+  color: transparent;
+  -webkit-text-stroke: 1.5px var(--lime);
+  letter-spacing: -0.03em;
+  transition: color 0.5s var(--ease-out), -webkit-text-stroke-color 0.5s var(--ease-out);
+}
+.numeral-outline.is-filled {
+  color: var(--lime);
+  text-shadow: 0 0 28px var(--lime-a60);
+}
+
+.glow-text { text-shadow: 0 0 20px var(--lime-a60); }
+
+/* ─────────────────────────── Controls ─────────────────────────── */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.badge-ok     { background: var(--ok-dim);     color: var(--ok);     border-color: rgba(198, 245, 60, 0.3); }
+.badge-danger { background: var(--danger-dim); color: var(--danger); border-color: rgba(255, 68, 56, 0.3); }
+.badge-warn   { background: var(--warn-dim);   color: var(--warn);   border-color: rgba(255, 176, 32, 0.3); }
+.badge-hold   { background: var(--hold-dim);   color: var(--hold);   border-color: rgba(255, 197, 61, 0.3); }
+.badge-info   { background: var(--info-dim);   color: var(--info);   border-color: rgba(90, 209, 255, 0.3); }
+.badge-muted  { background: rgba(255, 255, 255, 0.04); color: var(--text-muted); border-color: var(--border-2); }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  padding: 9px 18px;
+  border-radius: 8px;
+  font-family: 'Archivo', sans-serif;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.2s var(--ease-out), color 0.2s var(--ease-out),
+              border-color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out),
+              transform 0.2s var(--ease-out);
+}
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.btn-lime {
+  background: var(--lime);
+  color: #0A0A0A;
+  box-shadow: 0 0 0 0 var(--lime-a35);
+}
+.btn-lime:not(:disabled):hover {
+  background: var(--lime-bright);
+  box-shadow: 0 6px 28px -6px var(--lime-a60);
+  transform: translateY(-1px);
+}
+
+.btn-ghost {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-2);
+  border-color: var(--border-2);
+}
+.btn-ghost:not(:disabled):hover {
+  background: rgba(198, 245, 60, 0.07);
+  border-color: rgba(198, 245, 60, 0.35);
+  color: var(--lime);
+  transform: translateY(-1px);
+}
+
+.btn-danger {
+  background: var(--danger-dim);
+  color: var(--danger);
+  border-color: rgba(255, 68, 56, 0.35);
+}
+.btn-danger:not(:disabled):hover {
+  background: rgba(255, 68, 56, 0.18);
+  border-color: var(--danger);
+  transform: translateY(-1px);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 5px 11px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-2);
+  color: var(--text-2);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  line-height: 1.3;
+  cursor: pointer;
+  transition: all 0.2s var(--ease-out);
+}
+.chip:hover {
+  border-color: rgba(198, 245, 60, 0.4);
+  color: var(--lime);
+  background: rgba(198, 245, 60, 0.06);
+  transform: translateY(-1px);
+}
+.chip-danger:hover { border-color: rgba(255, 68, 56, 0.5); color: var(--danger); background: rgba(255, 68, 56, 0.07); }
+.chip-hold:hover   { border-color: rgba(255, 197, 61, 0.5); color: var(--hold);   background: rgba(255, 197, 61, 0.07); }
+.chip-warn:hover   { border-color: rgba(255, 176, 32, 0.5); color: var(--warn);   background: rgba(255, 176, 32, 0.07); }
+
+.field {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--border-2);
+  border-radius: 9px;
+  padding: 9px 14px;
+  color: var(--text);
+  font-size: 12px;
+  transition: border-color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out),
+              background 0.2s var(--ease-out);
+}
+.field::placeholder { color: var(--text-faint); }
+.field:focus {
+  outline: none;
+  border-color: rgba(198, 245, 60, 0.5);
+  background: rgba(198, 245, 60, 0.03);
+  box-shadow: 0 0 0 3px var(--lime-a10);
+}
+
+/* Meter / progress rail */
+.meter {
+  position: relative;
+  height: 6px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.meter-fill {
+  height: 100%;
+  border-radius: 99px;
+  transition: width 0.7s var(--ease-out), background 0.3s ease;
+  position: relative;
+}
+/* Light sweeping along a filling meter. */
+.meter-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+  background-size: 200% 100%;
+  animation: meterSweep 2.2s linear infinite;
+}
+
+/* Tick strip — the radial dial ticks, flattened. */
+.tickrail {
+  height: 10px;
+  background-image: repeating-linear-gradient(
+    90deg,
+    var(--lime-a35) 0 1px,
+    transparent 1px 7px
+  );
+  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+}
+
+/* ─────────────────────────── Keyframes ─────────────────────────── */
+
+@keyframes ambientDrift {
+  0%   { transform: translate3d(0, 0, 0) scale(1); }
+  100% { transform: translate3d(-2%, 1.5%, 0) scale(1.06); }
+}
+
+@keyframes meterSweep {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@keyframes revealUp {
+  from { opacity: 0; transform: translateY(18px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes revealScale {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(14px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes limePulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--lime-a35), 0 0 24px -6px var(--lime-a35); }
+  50%      { box-shadow: 0 0 0 6px rgba(198, 245, 60, 0), 0 0 44px -6px var(--lime-a60); }
+}
+
+@keyframes dangerPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 68, 56, 0.45), 0 0 24px -6px rgba(255, 68, 56, 0.5); }
+  50%      { box-shadow: 0 0 0 8px rgba(255, 68, 56, 0), 0 0 52px -6px rgba(255, 68, 56, 0.75); }
+}
+
+@keyframes blink {
+  0%, 45%   { opacity: 1; }
+  55%, 100% { opacity: 0.25; }
+}
+
+@keyframes spinSlow { to { transform: rotate(360deg); } }
+@keyframes spinReverse { to { transform: rotate(-360deg); } }
+
+@keyframes scanline {
+  0%   { transform: translateY(-100%); opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: translateY(1000%); opacity: 0; }
+}
+
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+
+@keyframes caretBlink {
+  0%, 49%   { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  15% { transform: translateX(-6px); }
+  30% { transform: translateX(6px); }
+  45% { transform: translateX(-5px); }
+  60% { transform: translateX(5px); }
+  75% { transform: translateX(-3px); }
+  90% { transform: translateX(3px); }
+}
+
+@keyframes glowBreath {
+  0%, 100% { opacity: 0.5; transform: scale(1); }
+  50%      { opacity: 1;   transform: scale(1.08); }
+}
+
+/* ─────────────────────── Animation utilities ─────────────────────── */
+
+.anim-reveal      { animation: revealUp 0.6s var(--ease-out) both; }
+.anim-reveal-scale{ animation: revealScale 0.5s var(--ease-out) both; }
+.anim-fade        { animation: fadeIn 0.4s ease both; }
+.anim-slide-right { animation: slideInRight 0.4s var(--ease-out) both; }
+.anim-lime-pulse  { animation: limePulse 2.4s ease-in-out infinite; }
+.anim-danger-pulse{ animation: dangerPulse 1.4s ease-in-out infinite; }
+.anim-blink       { animation: blink 1.6s steps(1) infinite; }
+.anim-spin-slow   { animation: spinSlow 22s linear infinite; }
+.anim-spin-rev    { animation: spinReverse 34s linear infinite; }
+.anim-shake       { animation: shake 0.5s ease; }
+.anim-breath      { animation: glowBreath 3.2s ease-in-out infinite; }
+
+/* Staggered entrances for lists/grids. */
+.stagger > *          { animation: revealUp 0.5s var(--ease-out) both; }
+.stagger > *:nth-child(1) { animation-delay: 0.04s; }
+.stagger > *:nth-child(2) { animation-delay: 0.08s; }
+.stagger > *:nth-child(3) { animation-delay: 0.12s; }
+.stagger > *:nth-child(4) { animation-delay: 0.16s; }
+.stagger > *:nth-child(5) { animation-delay: 0.20s; }
+.stagger > *:nth-child(6) { animation-delay: 0.24s; }
+.stagger > *:nth-child(7) { animation-delay: 0.28s; }
+.stagger > *:nth-child(8) { animation-delay: 0.32s; }
+
+/* Scroll-reveal — paired with the useReveal hook. */
+.reveal {
+  opacity: 0;
+  transform: translateY(26px);
+  transition: opacity 0.7s var(--ease-out), transform 0.7s var(--ease-out);
+}
+.reveal.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* A scanline that sweeps a panel once on mount. */
+.scanner {
+  position: relative;
+  overflow: hidden;
+}
+.scanner::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 24%;
+  background: linear-gradient(180deg, transparent, var(--lime-a20), transparent);
+  animation: scanline 2.6s var(--ease-out) 1 forwards;
+  pointer-events: none;
+}
+
+.marquee-track {
+  display: flex;
+  width: max-content;
+  animation: marquee 34s linear infinite;
+}
+.marquee-mask {
+  mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+}
+
+.caret::after {
+  content: '▍';
+  color: var(--lime);
+  animation: caretBlink 1s steps(1) infinite;
+  margin-left: 1px;
+}
+
+/* ═══════════════════════ The dial ═══════════════════════
+   Brushed-metal disc, lime progress torus, 60 radial ticks, glowing hub.
+   Everything is sized in % of the root so one `size` prop scales it all. */
+
+.dial {
+  position: relative;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  transition: transform 0.5s var(--ease-spring), filter 0.4s var(--ease-out);
+}
+
+.dial.is-interactive { cursor: pointer; }
+.dial.is-interactive:hover { transform: scale(1.022); }
+.dial.is-interactive:active { transform: scale(0.985); }
+.dial.is-interactive:focus-visible {
+  outline: 2px solid var(--dial-accent);
+  outline-offset: 10px;
+}
+
+/* Bloom pushed behind the assembly. */
+.dial-bloom {
+  position: absolute;
+  inset: -16%;
+  border-radius: 50%;
+  z-index: 0;
+  background: radial-gradient(circle, var(--dial-accent) 0%, transparent 62%);
+  opacity: 0.26;
+  filter: blur(34px);
+  animation: glowBreath 4.5s ease-in-out infinite;
+}
+.dial.is-frozen .dial-bloom { opacity: 0.34; animation-duration: 1.6s; }
+
+/* Machined outer body. */
+.dial-body {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  z-index: 1;
+  background:
+    radial-gradient(circle at 50% 22%, #2C2C2C 0%, #131313 46%, #060606 78%);
+  box-shadow:
+    inset 0 2px 4px rgba(255, 255, 255, 0.07),
+    inset 0 -14px 34px rgba(0, 0, 0, 0.9),
+    0 34px 70px rgba(0, 0, 0, 0.75);
+  overflow: hidden;
+}
+
+/* Brushed sheen sweeping the body. */
+.dial-brushed {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    rgba(255, 255, 255, 0.00) 0deg,
+    rgba(255, 255, 255, 0.07) 40deg,
+    rgba(255, 255, 255, 0.00) 90deg,
+    rgba(255, 255, 255, 0.05) 150deg,
+    rgba(255, 255, 255, 0.00) 200deg,
+    rgba(255, 255, 255, 0.08) 268deg,
+    rgba(255, 255, 255, 0.00) 320deg,
+    rgba(255, 255, 255, 0.00) 360deg
+  );
+  animation: spinSlow 26s linear infinite;
+}
+
+.dial-arc {
+  position: absolute;
+  inset: 4%;
+  z-index: 2;
+  overflow: visible;
+}
+.dial-arc-fill {
+  transition: stroke-dashoffset 0.9s var(--ease-out);
+}
+
+.dial-plate {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+}
+
+.dial-ticks {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.dial-ticks line { transition: stroke 0.5s var(--ease-out); }
+
+/* Inner dome. */
+.dial-plate-inner {
+  position: relative;
+  width: 50%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(circle at 50% 26%, #333333 0%, #1B1B1B 42%, #0B0B0B 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.055),
+    inset 0 8px 18px rgba(255, 255, 255, 0.045),
+    inset 0 -14px 30px rgba(0, 0, 0, 0.92),
+    0 18px 38px rgba(0, 0, 0, 0.7);
+}
+
+/* Two extra concentric machined steps. */
+.dial-plate-inner::before,
+.dial-plate-inner::after {
+  content: '';
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.dial-plate-inner::before {
+  inset: 11%;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.045),
+    inset 0 5px 12px rgba(0, 0, 0, 0.65);
+}
+.dial-plate-inner::after {
+  inset: 23%;
+  background: radial-gradient(circle at 50% 30%, #2A2A2A, #101010 70%);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.05),
+    inset 0 -6px 14px rgba(0, 0, 0, 0.8);
+}
+
+/* Hub — sits above the machined steps, carries the glyph. */
+.dial-hub {
+  position: relative;
+  z-index: 2;
+  width: 42%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(circle at 50% 35%, #242424, #0A0A0A 75%);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.07),
+    inset 0 -4px 10px rgba(0, 0, 0, 0.85);
+}
+
+.dial-hub-glow {
+  position: absolute;
+  inset: -22%;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--dial-accent) 0%, transparent 66%);
+  opacity: 0.42;
+  filter: blur(9px);
+  animation: glowBreath 3s ease-in-out infinite;
+}
+.dial.is-frozen .dial-hub-glow { animation-duration: 1.1s; opacity: 0.55; }
+
+.dial-glyph {
+  position: relative;
+  z-index: 1;
+  width: 58%;
+  height: 58%;
+  filter: drop-shadow(0 0 7px var(--dial-accent));
+}
+
+/* Dome specular — a soft top-left highlight over everything. */
+.dial-gloss {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse 62% 44% at 34% 16%,
+    rgba(255, 255, 255, 0.10),
+    transparent 62%
+  );
+}
+
+/* ───────────── Bracketed HUD callouts ───────────── */
+
+.hud-label {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 7px 13px;
+  background: rgba(10, 10, 10, 0.72);
+  backdrop-filter: blur(6px);
+  color: var(--text-2);
+  font-family: 'Outfit', sans-serif;
+  font-size: 11.5px;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  --hud-l: 8px;
+}
+
+/* Connector tick running toward the dial. */
+.hud-label::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  width: 26px;
+  height: 1px;
+  background: linear-gradient(90deg, var(--hud-c), transparent);
+  opacity: 0.5;
+}
+.hud-label-left::before  { right: -26px; background: linear-gradient(90deg, var(--hud-c), transparent); }
+.hud-label-right::before { left: -26px;  background: linear-gradient(270deg, var(--hud-c), transparent); }
+
+/* ─────────────────────────── Scrollbar ─────────────────────────── */
+
+::-webkit-scrollbar { width: 7px; height: 7px; }
+::-webkit-scrollbar-track { background: var(--bg-2); }
+::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+  border-radius: 99px;
+  border: 1px solid var(--border);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--lime-deep); }
+
+/* ─────────────────────── Reduced motion ─────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .reveal { opacity: 1; transform: none; }
+}
