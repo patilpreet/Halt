@@ -228,4 +228,19 @@ Set env vars: `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_GROQ_API_KEY`
 
 ---
 
+## 👥 Team & Contribution Roles
+
+We collaborated as a team to design, build, and document Halt:
+
+* **Parth Raut** (Team Leader & Product Manager)
+  - Designed the pitch strategy, defined requirement criteria, and coordinated the project presentation and documentation.
+* **Preet Patil** (Lead Full-Stack Developer)
+  - Built the Express gateway server, set up Supabase synchronization, and integrated the Groq LLaMA and Gemini AI engines.
+* **Krupali Raut** (UI/UX Developer)
+  - Designed the "Signal" HUD interface dashboard, styled the interactive dials, and developed the visual status indicators.
+* **Archit Patil** (AI Security Analyst & Quality Assurance)
+  - Developed the input sanitization filters (regex scanner), mapped out attack presets, and verified threat scenarios.
+
+---
+
 *Halt © 2026 — Built for Fintech Hackathon Problem Statement 2: The Kill Switch*
